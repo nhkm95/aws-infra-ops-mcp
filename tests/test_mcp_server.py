@@ -22,5 +22,6 @@ def test_tool_schemas_include_expected_inputs() -> None:
 
     assert health_schema["required"] == ["instance_name"]
     assert error_schema["properties"]["maximum_results"]["default"] == 10
+    assert error_schema["properties"]["minutes"]["default"] == 60
+    assert error_schema["required"] == ["instance_name"]
     assert set(service_schema["required"]) == {"instance_name", "service_name"}
-

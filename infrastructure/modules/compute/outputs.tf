@@ -3,6 +3,11 @@ output "instance_id" {
   value       = aws_instance.this.id
 }
 
+output "instance_arn" {
+  description = "ARN of the EC2 instance."
+  value       = aws_instance.this.arn
+}
+
 output "public_ip" {
   description = "Public IPv4 address assigned to the instance."
   value       = aws_instance.this.public_ip

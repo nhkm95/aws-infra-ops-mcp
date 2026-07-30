@@ -92,10 +92,24 @@ variable "log_retention_days" {
   default     = 7
 
   validation {
-    condition     = contains([
+    condition = contains([
       1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731,
       1096, 1827, 2192, 2557, 2922, 3288, 3653,
     ], var.log_retention_days)
     error_message = "log_retention_days must be a CloudWatch Logs supported retention value."
+  }
+}
+
+variable "trusted_sso_role_arn_pattern" {
+  description = "IAM Identity Center AWSReservedSSO role ARN pattern allowed to assume the MCP runtime role."
+  type        = string
+  default     = "arn:aws:iam::004401752458:role/aws-reserved/sso.amazonaws.com/ap-southeast-1/AWSReservedSSO_AdministratorAccess_*"
+
+  validation {
+    condition = can(regex(
+      "^arn:aws:iam::[0-9]{12}:role/aws-reserved/sso\\.amazonaws\\.com/[a-z0-9-]+/AWSReservedSSO_[A-Za-z0-9+=,.@_-]+_\\*$",
+      var.trusted_sso_role_arn_pattern
+    ))
+    error_message = "trusted_sso_role_arn_pattern must be an IAM Identity Center AWSReservedSSO role ARN pattern ending in an asterisk."
   }
 }

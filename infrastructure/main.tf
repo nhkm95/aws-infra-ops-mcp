@@ -29,5 +29,12 @@ module "compute" {
 module "mcp_readonly" {
   source = "./modules/mcp_readonly"
 
-  name = "${var.project_name}-${var.environment}-ec2-readonly"
+  name                         = "${var.project_name}-${var.environment}-diagnostics-readonly"
+  runtime_role_name            = "aws-infra-ops-mcp-lab-runtime"
+  trusted_sso_role_arn_pattern = var.trusted_sso_role_arn_pattern
+  instance_arn                 = module.compute.instance_arn
+  log_group_arns = [
+    module.observability.system_log_group_arn,
+    module.observability.nginx_log_group_arn,
+  ]
 }

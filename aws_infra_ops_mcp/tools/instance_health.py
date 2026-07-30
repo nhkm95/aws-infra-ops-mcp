@@ -8,6 +8,7 @@ from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, 
 
 from aws_infra_ops_mcp.aws import create_ec2_client
 from aws_infra_ops_mcp.policy import validate_instance
+from aws_infra_ops_mcp.tools.instance_resolution import resolve_approved_instance
 
 Clock = Callable[[], datetime]
 
@@ -40,41 +41,9 @@ def inspect_instance_health(
         )
 
     try:
-        response = ec2_client.describe_instances(
-            Filters=[
-                {"Name": "tag:Name", "Values": [normalized_name]},
-                {"Name": "tag:MCPAccess", "Values": ["allowed"]},
-                {
-                    "Name": "instance-state-name",
-                    "Values": [
-                        "pending",
-                        "running",
-                        "shutting-down",
-                        "stopping",
-                        "stopped",
-                    ],
-                },
-            ]
+        normalized_name, instance = resolve_approved_instance(
+            normalized_name, ec2_client
         )
-        instances = [
-            instance
-            for reservation in response.get("Reservations", [])
-            for instance in reservation.get("Instances", [])
-            if instance.get("State", {}).get("Name") != "terminated"
-        ]
-
-        if not instances:
-            raise LookupError(
-                f"No non-terminated EC2 instance matched approved name "
-                f"'{normalized_name}' and tag MCPAccess=allowed."
-            )
-        if len(instances) > 1:
-            raise LookupError(
-                f"More than one non-terminated EC2 instance matched approved name "
-                f"'{normalized_name}' and tag MCPAccess=allowed."
-            )
-
-        instance = instances[0]
         instance_id = instance["InstanceId"]
         status_response = ec2_client.describe_instance_status(
             InstanceIds=[instance_id],

@@ -30,11 +30,11 @@ The public IPv4 address provides inexpensive outbound connectivity without a
 NAT gateway or VPC interface endpoints. It does not make the instance reachable
 because the security group permits no inbound traffic.
 
-The `mcp_readonly` module creates an unattached customer-managed IAM policy
-containing only `ec2:DescribeInstances` and `ec2:DescribeInstanceStatus`.
-These EC2 Describe APIs normally do not support resource-level IAM permissions,
-so AWS requires `"Resource": "*"` even for this read-only policy. Attach the
-policy only to the identity used to run the MCP when that integration is ready.
+The `mcp_readonly` module creates the customer-managed
+`aws-infra-ops-mcp-lab-diagnostics-readonly` policy and attaches it only to the
+dedicated `aws-infra-ops-mcp-lab-runtime` role. The trusted IAM Identity Center
+permission-set role assumes that runtime role for sessions of no more than one
+hour. The runtime role has no inline policy or instance profile.
 
 ## Potential costs
 

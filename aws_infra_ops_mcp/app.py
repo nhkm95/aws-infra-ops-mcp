@@ -12,8 +12,8 @@ mcp = FastMCP(
     "AWS Infra Ops Lab",
     instructions=(
         "Use these read-only tools to gather evidence about the approved AWS "
-        "lab instance. Instance health is AWS-backed; service status and recent "
-        "errors are simulated and must not be described as live AWS evidence."
+        "lab instance. Instance health, recent errors, and nginx service status "
+        "are backed by AWS read-only APIs."
     ),
 )
 
@@ -28,9 +28,10 @@ def get_instance_health(instance_name: str) -> dict:
 def get_recent_errors(
     instance_name: str,
     maximum_results: int = 10,
+    minutes: int = 60,
 ) -> dict:
-    """Get recent application and operating-system errors for an instance."""
-    return inspect_recent_errors(instance_name, maximum_results)
+    """Get recent CloudWatch application and operating-system errors."""
+    return inspect_recent_errors(instance_name, maximum_results, minutes)
 
 
 @mcp.tool()

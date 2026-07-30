@@ -37,6 +37,26 @@ output "cloudwatch_log_group_names" {
 }
 
 output "mcp_readonly_policy_arn" {
-  description = "ARN of the unattached MCP EC2 read-only IAM policy."
+  description = "ARN of the MCP diagnostics read-only IAM policy."
   value       = module.mcp_readonly.policy_arn
+}
+
+output "mcp_runtime_role_name" {
+  description = "Name of the least-privilege MCP runtime IAM role."
+  value       = module.mcp_readonly.runtime_role_name
+}
+
+output "mcp_runtime_role_arn" {
+  description = "ARN of the least-privilege MCP runtime IAM role."
+  value       = module.mcp_readonly.runtime_role_arn
+}
+
+output "ssm_document_name" {
+  description = "Name of the fixed read-only nginx status SSM document."
+  value       = module.mcp_readonly.ssm_document_name
+}
+
+output "ssm_document_arn" {
+  description = "ARN of the fixed read-only nginx status SSM document."
+  value       = module.mcp_readonly.ssm_document_arn
 }

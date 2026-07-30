@@ -1,27 +1,58 @@
+# Python
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
-.env
-.env.*
-!.env.example
 dist/
 build/
 *.egg-info/
-.idea/
-.vscode/
 
-# Terraform working data and local configuration
+# Environment and credentials
+.env
+.env.*
+!.env.example
+.aws/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+gitssh
+
+# Terraform
 **/.terraform/
 *.tfstate
 *.tfstate.*
-*.tfplan
-*.plan
 crash.log
 crash.*.log
+*.tfplan
+tfplan
 *.tfvars
 *.tfvars.json
-!terraform.tfvars.example
-!**/terraform.tfvars.example
+!*.tfvars.example
+!*.tfvars.json.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Generated plan exports
+infrastructure/output.json
+/output.json
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*~

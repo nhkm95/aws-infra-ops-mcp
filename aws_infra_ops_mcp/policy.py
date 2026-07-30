@@ -7,6 +7,8 @@ without changing the public MCP tool schemas.
 ALLOWED_INSTANCES = frozenset({"web01"})
 ALLOWED_SERVICES = frozenset({"nginx"})
 MAX_ERROR_RESULTS = 50
+MIN_LOOKBACK_MINUTES = 5
+MAX_LOOKBACK_MINUTES = 1440
 
 
 def validate_instance(instance_name: str) -> str:
@@ -38,3 +40,13 @@ def validate_maximum_results(maximum_results: int) -> int:
             f"maximum_results must be between 1 and {MAX_ERROR_RESULTS}"
         )
     return maximum_results
+
+
+def validate_lookback_minutes(minutes: int) -> int:
+    """Enforce a bounded CloudWatch Logs Insights lookback window."""
+    if not MIN_LOOKBACK_MINUTES <= minutes <= MAX_LOOKBACK_MINUTES:
+        raise ValueError(
+            f"minutes must be between {MIN_LOOKBACK_MINUTES} and "
+            f"{MAX_LOOKBACK_MINUTES}"
+        )
+    return minutes
