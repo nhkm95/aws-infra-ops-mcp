@@ -55,7 +55,6 @@ resource "aws_security_group" "instance" {
   vpc_id      = aws_vpc.this.id
 
   # Deliberately no ingress blocks.
-  egress = []
 
   tags = {
     Name = "${var.name}-web01"
@@ -69,4 +68,14 @@ resource "aws_vpc_security_group_egress_rule" "https" {
   from_port         = 443
   to_port           = 443
   cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "ssh" {
+  security_group_id = aws_security_group.instance.id
+  description       = "SSH inbound from host"
+  ip_protocol       = "tcp"
+  from_port         = 22
+  to_port           = 22
+  cidr_ipv4         = "153.20.116.110/32"
+
 }
