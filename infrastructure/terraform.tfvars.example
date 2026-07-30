@@ -1,0 +1,9 @@
+aws_region          = "ap-southeast-1"
+project_name        = "aws-infra-ops-mcp"
+environment         = "lab"
+vpc_cidr            = "10.20.0.0/16"
+public_subnet_cidr  = "10.20.1.0/24"
+instance_name       = "web01"
+instance_type       = "t3.micro"
+root_volume_size    = 10
+log_retention_days  = 7
