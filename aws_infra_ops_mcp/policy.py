@@ -9,6 +9,8 @@ ALLOWED_SERVICES = frozenset({"nginx"})
 MAX_ERROR_RESULTS = 50
 MIN_LOOKBACK_MINUTES = 5
 MAX_LOOKBACK_MINUTES = 1440
+ALLOWED_JOURNAL_LOOKBACK_MINUTES = frozenset({5, 10, 15, 30, 60, 120})
+ALLOWED_JOURNAL_RESULT_LIMITS = frozenset({10, 25, 50, 100})
 
 
 def validate_instance(instance_name: str) -> str:
@@ -50,3 +52,23 @@ def validate_lookback_minutes(minutes: int) -> int:
             f"{MAX_LOOKBACK_MINUTES}"
         )
     return minutes
+
+
+def validate_journal_lookback_minutes(minutes: int) -> int:
+    """Enforce the fixed journal lookback allowlist."""
+    if minutes not in ALLOWED_JOURNAL_LOOKBACK_MINUTES:
+        raise ValueError(
+            "minutes must be one of "
+            f"{sorted(ALLOWED_JOURNAL_LOOKBACK_MINUTES)}"
+        )
+    return minutes
+
+
+def validate_journal_maximum_results(maximum_results: int) -> int:
+    """Enforce the fixed journal result-limit allowlist."""
+    if maximum_results not in ALLOWED_JOURNAL_RESULT_LIMITS:
+        raise ValueError(
+            "maximum_results must be one of "
+            f"{sorted(ALLOWED_JOURNAL_RESULT_LIMITS)}"
+        )
+    return maximum_results

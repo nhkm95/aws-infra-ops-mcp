@@ -57,6 +57,17 @@ data "aws_iam_policy_document" "this" {
   }
 
   statement {
+    sid    = "RunFixedNginxJournalDocumentOnLabInstance"
+    effect = "Allow"
+
+    actions = ["ssm:SendCommand"]
+    resources = [
+      aws_ssm_document.nginx_journal.arn,
+      var.instance_arn,
+    ]
+  }
+
+  statement {
     sid       = "ReadApprovedEc2Metrics"
     effect    = "Allow"
     actions   = ["cloudwatch:GetMetricData"]
@@ -103,6 +114,53 @@ resource "aws_ssm_document" "nginx_status" {
             "[ \"$enabled_state\" = \"enabled\" ] && enabled_at_boot=true || true",
             "printf '{\"service_name\":\"nginx\",\"active_state\":\"%s\",\"sub_state\":\"%s\",\"enabled_at_boot\":%s}\\n' \"$active_state\" \"$sub_state\" \"$enabled_at_boot\"",
             "exit 0",
+          ]
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_ssm_document" "nginx_journal" {
+  name            = "mcp-lab-get-nginx-journal"
+  document_type   = "Command"
+  document_format = "JSON"
+
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Return a fixed bounded read-only nginx systemd journal"
+    parameters = {
+      lookbackMinutes = {
+        type              = "String"
+        description       = "Approved bounded journal lookback in minutes"
+        default           = "60"
+        allowedValues     = ["5", "10", "15", "30", "60", "120"]
+        allowedPattern    = "^(5|10|15|30|60|120)$"
+        interpolationType = "ENV_VAR"
+      }
+      maximumResults = {
+        type              = "String"
+        description       = "Approved maximum number of journal entries"
+        default           = "50"
+        allowedValues     = ["10", "25", "50", "100"]
+        allowedPattern    = "^(10|25|50|100)$"
+        interpolationType = "ENV_VAR"
+      }
+    }
+    mainSteps = [
+      {
+        action = "aws:runShellScript"
+        name   = "getNginxJournal"
+        precondition = {
+          StringEquals = [
+            "platformType",
+            "Linux",
+          ]
+        }
+        inputs = {
+          timeoutSeconds = "10"
+          runCommand = [
+            "journalctl --unit=nginx --since \"-$SSM_lookbackMinutes minutes\" --no-pager --output=short-iso --lines=\"$SSM_maximumResults\"",
           ]
         }
       }

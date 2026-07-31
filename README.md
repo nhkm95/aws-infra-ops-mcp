@@ -3,8 +3,9 @@
 This project runs a small, local server that helps Codex investigate one AWS
 lab host using live evidence. It is useful when you want an assistant to check
 whether an EC2 instance is healthy, inspect a fixed set of performance metrics,
-look for recent system or nginx errors, and inspect nginx service state without
-giving the assistant general AWS or shell access.
+look for recent system or nginx errors, inspect nginx service state, and read a
+bounded nginx systemd journal without giving the assistant general AWS or shell
+access.
 
 MCP (Model Context Protocol) is a standard way for an AI client to call
 well-defined tools provided by another process. Here, Codex starts the server
@@ -16,7 +17,7 @@ The server is read-only. It has no generic shell tool and no restart, stop,
 deploy, configuration, or other remediation tools. It supports only the
 allowlisted instance `web01` and the service `nginx`.
 
-## What the four tools check
+## What the five tools check
 
 | Tool | AWS source | What it returns |
 | --- | --- | --- |
@@ -24,6 +25,7 @@ allowlisted instance `web01` and the service `nginx`.
 | `get_instance_metrics` | CloudWatch metrics | CPU average/maximum, status-check maximums, and total network bytes over a bounded lookback. |
 | `get_recent_errors` | CloudWatch Logs Insights | A bounded set of recent error-related events from the approved system and nginx log groups. |
 | `get_service_status` | Systems Manager | nginx active state, sub-state, and boot-enabled state from a fixed, restricted SSM document. |
+| `get_service_journal` | Systems Manager | A bounded nginx systemd journal from a separate fixed, restricted SSM document. |
 
 Every response identifies its source, including `aws-cloudwatch-metrics` for
 instance metrics. Tests inject fake AWS clients, so the automated test suite
@@ -52,6 +54,16 @@ The server always queries:
 fixed set of read-only `systemctl` checks. The caller cannot provide a command,
 document name, instance ID, path, or shell argument.
 
+`get_service_journal` invokes only the Terraform-managed
+`mcp-lab-get-nginx-journal` document. It accepts lookbacks of only 5, 10, 15,
+30, 60, or 120 minutes and result limits of only 10, 25, 50, or 100. The
+document is Linux-only, has a short timeout, fixes the unit to nginx, and runs a
+fixed `journalctl` operation with no pager and bounded output. Its only
+parameters are the enumerated lookback and result limit. The caller cannot
+provide a unit, command, journal argument, path, filter, instance ID, or
+document name. Returned lines, entry count, and total response size are bounded;
+an empty journal is returned as an empty `entries` array.
+
 ## Architecture
 
 ```text
@@ -63,10 +75,11 @@ server.py
   ├─ get_instance_health ── EC2 status APIs
   ├─ get_instance_metrics ─ CloudWatch GetMetricData
   ├─ get_recent_errors ──── CloudWatch Logs Insights
-  └─ get_service_status ─── restricted SSM document ── web01
+  ├─ get_service_status ─── restricted SSM document ── web01
+  └─ get_service_journal ── restricted SSM document ── web01
 ```
 
-Terraform creates the lab instance, log groups, restricted SSM document,
+Terraform creates the lab instance, log groups, restricted SSM documents,
 least-privilege runtime policy and role, and supporting network resources.
 Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
 `infrastructure/`.
@@ -80,8 +93,12 @@ Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
   documented `AWS/EC2` allowlist, while logs are limited to two log groups. The
   `logs:StartQuery` IAM resources use the required log-group ARN form ending in
   `:*`; Terraform normalizes inputs before adding that suffix.
-- The SSM document accepts no user parameters and cannot be replaced with an
-  arbitrary Run Command document.
+- The status SSM document accepts no user parameters and cannot be replaced
+  with an arbitrary Run Command document.
+- The journal SSM document accepts only enumerated numeric bounds. Its nginx
+  unit and `journalctl` command are fixed, and IAM permits `ssm:SendCommand`
+  only against the exact custom status or journal document and the exact lab
+  instance.
 - The instance security group has no inbound rules. Administration uses
   Systems Manager rather than SSH.
 - The MCP server contains no generic shell or remediation capability.
@@ -236,11 +253,13 @@ On Windows, use paths such as
 Restart Codex after changing its MCP configuration. The server waits silently
 for MCP messages on standard input; stdout is reserved for the protocol.
 
-Two optional, non-secret environment variables are available:
+Three optional, non-secret environment variables are available:
 
 - `AWS_LOG_GROUP_PREFIX` changes the default `/aws/mcp-lab` prefix.
 - `AWS_SSM_DOCUMENT_NAME` changes the deployed document name from
   `mcp-lab-get-nginx-status`.
+- `AWS_SSM_JOURNAL_DOCUMENT_NAME` changes the deployed journal document name
+  from `mcp-lab-get-nginx-journal`.
 
 Changing these values also requires matching infrastructure and IAM policy
 configuration.
@@ -262,6 +281,21 @@ Check only nginx:
 Call only get_service_status for web01 and nginx. Show the structured evidence
 and its data source.
 ```
+
+Distinguish a clean stop from a startup or configuration failure:
+
+```text
+Investigate why nginx is unavailable on web01. Call get_service_status and
+get_service_journal with a 60-minute lookback and at most 50 entries. Separate
+confirmed journal evidence from inference and identify every data source.
+```
+
+`get_service_journal` is not a generic shell, Run Command, or remediation tool.
+It cannot accept arbitrary commands and cannot start, stop, restart, or modify
+nginx. The custom SSM document internally uses the `aws:runShellScript`
+document plugin to execute its fixed, reviewed `journalctl` command. This is
+distinct from granting access to the AWS-managed `AWS-RunShellScript` document,
+which the runtime role is not permitted to invoke.
 
 Correlate an outage:
 
@@ -343,6 +377,8 @@ contains the package, and restart Codex after configuration changes.
 
 - Only `web01` and `nginx` are supported.
 - There is no HTTP reachability or end-to-end request tool.
+- The bounded journal can provide service-local evidence but does not expose
+  arbitrary units, full journal history, or general host inspection.
 - Error search uses a fixed keyword query rather than application-specific
   parsing.
 - CloudWatch Logs Insights queries may incur scan charges.

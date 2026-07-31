@@ -6,6 +6,7 @@ from aws_infra_ops_mcp.tools import (
     get_instance_health as inspect_instance_health,
     get_instance_metrics as inspect_instance_metrics,
     get_recent_errors as inspect_recent_errors,
+    get_service_journal as inspect_service_journal,
     get_service_status as inspect_service_status,
 )
 
@@ -14,7 +15,8 @@ mcp = FastMCP(
     instructions=(
         "Use these read-only tools to gather evidence about the approved AWS "
         "lab instance. Instance health, fixed CloudWatch metrics, recent errors, "
-        "and nginx service status are backed by AWS read-only APIs."
+        "nginx service status, and a bounded nginx journal are backed by AWS "
+        "read-only APIs."
     ),
 )
 
@@ -45,6 +47,22 @@ def get_recent_errors(
 def get_service_status(instance_name: str, service_name: str) -> dict:
     """Check the current state of an approved service on an instance."""
     return inspect_service_status(instance_name, service_name)
+
+
+@mcp.tool()
+def get_service_journal(
+    instance_name: str,
+    service_name: str,
+    minutes: int = 60,
+    maximum_results: int = 50,
+) -> dict:
+    """Get a bounded nginx systemd journal through a fixed SSM document."""
+    return inspect_service_journal(
+        instance_name,
+        service_name,
+        minutes,
+        maximum_results,
+    )
 
 
 def main() -> None:
