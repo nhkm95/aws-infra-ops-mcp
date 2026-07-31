@@ -2,9 +2,9 @@
 
 This project runs a small, local server that helps Codex investigate one AWS
 lab host using live evidence. It is useful when you want an assistant to check
-whether an EC2 instance is healthy, look for recent system or nginx errors, and
-inspect nginx service state without giving the assistant general AWS or shell
-access.
+whether an EC2 instance is healthy, inspect a fixed set of performance metrics,
+look for recent system or nginx errors, and inspect nginx service state without
+giving the assistant general AWS or shell access.
 
 MCP (Model Context Protocol) is a standard way for an AI client to call
 well-defined tools provided by another process. Here, Codex starts the server
@@ -16,16 +16,27 @@ The server is read-only. It has no generic shell tool and no restart, stop,
 deploy, configuration, or other remediation tools. It supports only the
 allowlisted instance `web01` and the service `nginx`.
 
-## What the three tools check
+## What the four tools check
 
 | Tool | AWS source | What it returns |
 | --- | --- | --- |
 | `get_instance_health` | EC2 | Instance state plus AWS system and instance status checks. |
+| `get_instance_metrics` | CloudWatch metrics | CPU average/maximum, status-check maximums, and total network bytes over a bounded lookback. |
 | `get_recent_errors` | CloudWatch Logs Insights | A bounded set of recent error-related events from the approved system and nginx log groups. |
 | `get_service_status` | Systems Manager | nginx active state, sub-state, and boot-enabled state from a fixed, restricted SSM document. |
 
-Every response identifies its source as `aws`, `aws-cloudwatch`, or `aws-ssm`.
-Tests inject fake AWS clients, so the automated test suite makes no AWS calls.
+Every response identifies its source, including `aws-cloudwatch-metrics` for
+instance metrics. Tests inject fake AWS clients, so the automated test suite
+makes no AWS calls.
+
+`get_instance_metrics` accepts only an approved instance name and a lookback of
+5–1440 minutes (60 minutes by default). It uses five-minute periods and the
+fixed `AWS/EC2` allowlist: `CPUUtilization` Average and Maximum;
+`StatusCheckFailed`, `StatusCheckFailed_Instance`, and
+`StatusCheckFailed_System` Maximum; and `NetworkIn` and `NetworkOut` Sum. The
+caller cannot supply an instance ID, namespace, metric, dimension, statistic,
+period, or CloudWatch query. Missing datapoints are returned as `null`, not
+invented zero values.
 
 `get_recent_errors` accepts a lookback of 5–1440 minutes and a result limit of
 1–50. The caller cannot provide log-group names or Logs Insights query text.
@@ -50,6 +61,7 @@ Codex
 server.py
   │
   ├─ get_instance_health ── EC2 status APIs
+  ├─ get_instance_metrics ─ CloudWatch GetMetricData
   ├─ get_recent_errors ──── CloudWatch Logs Insights
   └─ get_service_status ─── restricted SSM document ── web01
 ```
@@ -62,9 +74,10 @@ Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
 ## Security boundaries
 
 - The MCP runtime role can perform only the diagnostic API calls required by
-  the three tools.
+  the four tools.
 - Instance and service names are allowlisted in code.
-- CloudWatch queries are fixed and limited to two log groups. The
+- CloudWatch metric and log queries are fixed. Metrics are limited to the
+  documented `AWS/EC2` allowlist, while logs are limited to two log groups. The
   `logs:StartQuery` IAM resources use the required log-group ARN form ending in
   `:*`; Terraform normalizes inputs before adding that suffix.
 - The SSM document accepts no user parameters and cannot be replaced with an
@@ -76,8 +89,10 @@ Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
   static AWS credentials, `.env` files, AWS config directories, private keys,
   Terraform state, plans, or local variable files in this repository.
 
-Some AWS read-only APIs require `Resource: "*"`, including EC2 Describe calls
-and the query-level `logs:GetQueryResults` and `logs:StopQuery` calls. The
+Some AWS read-only APIs require `Resource: "*"`, including EC2 Describe calls,
+`cloudwatch:GetMetricData`, and the query-level `logs:GetQueryResults` and
+`logs:StopQuery` calls. The runtime policy grants only that single CloudWatch
+metrics action—no write, alarm, or broad CloudWatch read permissions. The
 resource-scoped actions remain limited to the two approved log groups, the
 exact lab instance, and the fixed SSM document.
 
@@ -232,13 +247,13 @@ configuration.
 
 ## Example troubleshooting prompts
 
-Run all three diagnostics:
+Run all four diagnostics:
 
 ```text
-Investigate the current health of web01 using all three approved diagnostic
-tools. Check EC2 health, recent errors from the last 15 minutes, and nginx
-service status. Separate confirmed evidence from conclusions and show each
-data source.
+Investigate the current health of web01 using all four approved diagnostic
+tools. Check EC2 health, CPU, status-check and network metrics from the last 15
+minutes, recent errors from the same period, and nginx service status. Separate
+confirmed evidence from conclusions and show each data source.
 ```
 
 Check only nginx:
@@ -275,8 +290,9 @@ sudo systemctl stop nginx
 logger "MCP-LAB ERROR: nginx intentionally stopped for diagnostic validation"
 ```
 
-Ask Codex to run all three diagnostics. Confirm that EC2 remains healthy, the
-log event appears, and nginx reports `inactive`/`dead`.
+Ask Codex to run all four diagnostics. Confirm that EC2 remains healthy, the
+metrics remain diagnostic-only, the log event appears, and nginx reports
+`inactive`/`dead`.
 
 Always restore the service before ending the test:
 

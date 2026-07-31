@@ -20,6 +20,11 @@ def create_logs_client() -> Any:
     return boto3.client("logs")
 
 
+def create_cloudwatch_client() -> Any:
+    """Create a CloudWatch metrics client from Boto3's standard configuration."""
+    return boto3.client("cloudwatch")
+
+
 def create_ssm_client() -> Any:
     """Create an SSM client from Boto3's standard session configuration."""
     return boto3.client("ssm")

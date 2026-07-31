@@ -57,6 +57,13 @@ data "aws_iam_policy_document" "this" {
   }
 
   statement {
+    sid       = "ReadApprovedEc2Metrics"
+    effect    = "Allow"
+    actions   = ["cloudwatch:GetMetricData"]
+    resources = ["*"]
+  }
+
+  statement {
     sid    = "ReadCommandInvocation"
     effect = "Allow"
 
@@ -105,7 +112,7 @@ resource "aws_ssm_document" "nginx_status" {
 
 resource "aws_iam_policy" "this" {
   name        = var.name
-  description = "Read-only EC2 health and CloudWatch Logs lookup for the Infrastructure Operations MCP"
+  description = "Read-only EC2, CloudWatch metrics and Logs lookup for the Infrastructure Operations MCP"
   policy      = data.aws_iam_policy_document.this.json
 }
 

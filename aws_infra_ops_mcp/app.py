@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 
 from aws_infra_ops_mcp.tools import (
     get_instance_health as inspect_instance_health,
+    get_instance_metrics as inspect_instance_metrics,
     get_recent_errors as inspect_recent_errors,
     get_service_status as inspect_service_status,
 )
@@ -12,8 +13,8 @@ mcp = FastMCP(
     "AWS Infra Ops Lab",
     instructions=(
         "Use these read-only tools to gather evidence about the approved AWS "
-        "lab instance. Instance health, recent errors, and nginx service status "
-        "are backed by AWS read-only APIs."
+        "lab instance. Instance health, fixed CloudWatch metrics, recent errors, "
+        "and nginx service status are backed by AWS read-only APIs."
     ),
 )
 
@@ -22,6 +23,12 @@ mcp = FastMCP(
 def get_instance_health(instance_name: str) -> dict:
     """Check EC2 state and AWS system and instance health checks."""
     return inspect_instance_health(instance_name)
+
+
+@mcp.tool()
+def get_instance_metrics(instance_name: str, minutes: int = 60) -> dict:
+    """Get fixed EC2 performance and status metrics from CloudWatch."""
+    return inspect_instance_metrics(instance_name, minutes)
 
 
 @mcp.tool()
