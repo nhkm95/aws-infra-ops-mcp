@@ -7,12 +7,13 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, NoRegionError
 
-from aws_infra_ops_mcp.aws import create_logs_client
+from aws_infra_ops_mcp.aws import create_logs_client, create_sts_client
 from aws_infra_ops_mcp.policy import (
     validate_instance,
     validate_lookback_minutes,
     validate_maximum_results,
 )
+from aws_infra_ops_mcp.runtime_identity import validate_runtime_identity
 
 DEFAULT_LOG_GROUP_PREFIX = "/aws/mcp-lab"
 TERMINAL_ERROR_STATUSES = frozenset({"Failed", "Cancelled", "Timeout", "Unknown"})
@@ -168,6 +169,7 @@ def get_recent_errors(
     validated_limit = validate_maximum_results(maximum_results)
     validated_minutes = validate_lookback_minutes(minutes)
     try:
+        validate_runtime_identity(create_sts_client())
         client = create_logs_client()
     except (NoRegionError, NoCredentialsError, ClientError, BotoCoreError) as error:
         raise RuntimeError(_aws_error_message(error)) from error

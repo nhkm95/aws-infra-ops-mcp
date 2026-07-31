@@ -60,3 +60,13 @@ output "ssm_document_arn" {
   description = "ARN of the fixed read-only nginx status SSM document."
   value       = module.mcp_readonly.ssm_document_arn
 }
+
+output "ssm_journal_document_name" {
+  description = "Name of the fixed read-only nginx journal SSM document."
+  value       = module.mcp_readonly.ssm_journal_document_name
+}
+
+output "ssm_journal_document_arn" {
+  description = "ARN of the fixed read-only nginx journal SSM document."
+  value       = module.mcp_readonly.ssm_journal_document_arn
+}

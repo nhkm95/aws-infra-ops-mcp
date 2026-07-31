@@ -9,8 +9,9 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, NoRegionError
 
-from aws_infra_ops_mcp.aws import create_ec2_client, create_ssm_client
+from aws_infra_ops_mcp.aws import create_ec2_client, create_ssm_client, create_sts_client
 from aws_infra_ops_mcp.policy import validate_instance, validate_service
+from aws_infra_ops_mcp.runtime_identity import validate_runtime_identity
 from aws_infra_ops_mcp.tools.instance_resolution import resolve_approved_instance
 
 DEFAULT_SSM_DOCUMENT_NAME = "mcp-lab-get-nginx-status"
@@ -186,6 +187,7 @@ def get_service_status(instance_name: str, service_name: str) -> dict[str, Any]:
     normalized_instance = validate_instance(instance_name)
     normalized_service = validate_service(service_name)
     try:
+        validate_runtime_identity(create_sts_client())
         ec2_client = create_ec2_client()
         ssm_client = create_ssm_client()
     except (NoRegionError, NoCredentialsError, ClientError, BotoCoreError) as error:

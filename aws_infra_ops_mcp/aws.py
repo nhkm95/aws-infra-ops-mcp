@@ -33,3 +33,8 @@ def create_ssm_client() -> Any:
 def create_cloudtrail_client() -> Any:
     """Create a CloudTrail client from Boto3's standard session configuration."""
     return boto3.client("cloudtrail")
+
+
+def create_sts_client() -> Any:
+    """Create an STS client from Boto3's standard session configuration."""
+    return boto3.client("sts")

@@ -6,8 +6,9 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, NoRegionError
 
-from aws_infra_ops_mcp.aws import create_ec2_client
+from aws_infra_ops_mcp.aws import create_ec2_client, create_sts_client
 from aws_infra_ops_mcp.policy import validate_instance
+from aws_infra_ops_mcp.runtime_identity import validate_runtime_identity
 from aws_infra_ops_mcp.tools.instance_resolution import resolve_approved_instance
 
 Clock = Callable[[], datetime]
@@ -78,6 +79,7 @@ def get_instance_health(instance_name: str) -> dict[str, Any]:
     """Return live, read-only EC2 health for an approved instance."""
     normalized_name = validate_instance(instance_name)
     try:
+        validate_runtime_identity(create_sts_client())
         client = create_ec2_client()
     except (NoRegionError, NoCredentialsError, ClientError, BotoCoreError) as error:
         raise RuntimeError(_aws_error_message(error)) from error

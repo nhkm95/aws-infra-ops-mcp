@@ -8,13 +8,14 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, NoRegionError
 
-from aws_infra_ops_mcp.aws import create_ec2_client, create_ssm_client
+from aws_infra_ops_mcp.aws import create_ec2_client, create_ssm_client, create_sts_client
 from aws_infra_ops_mcp.policy import (
     validate_instance,
     validate_journal_lookback_minutes,
     validate_journal_maximum_results,
     validate_service,
 )
+from aws_infra_ops_mcp.runtime_identity import validate_runtime_identity
 from aws_infra_ops_mcp.tools.instance_resolution import resolve_approved_instance
 from aws_infra_ops_mcp.tools.service_status import (
     LOCAL_POLL_TIMEOUT_SECONDS,
@@ -48,6 +49,8 @@ def _parse_journal_output(
         raise RuntimeError("SSM returned malformed service-journal output.")
 
     lines = output.splitlines()
+    if lines == ["-- No entries --"]:
+        return [], False
     truncated = len(lines) > maximum_results
     entries: list[str] = []
     response_chars = 0
@@ -183,6 +186,7 @@ def get_service_journal(
     validated_minutes = validate_journal_lookback_minutes(minutes)
     validated_maximum = validate_journal_maximum_results(maximum_results)
     try:
+        validate_runtime_identity(create_sts_client())
         ec2_client = create_ec2_client()
         ssm_client = create_ssm_client()
     except (NoRegionError, NoCredentialsError, ClientError, BotoCoreError) as error:

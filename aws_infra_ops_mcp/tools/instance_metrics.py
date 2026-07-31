@@ -6,8 +6,13 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, NoRegionError
 
-from aws_infra_ops_mcp.aws import create_cloudwatch_client, create_ec2_client
+from aws_infra_ops_mcp.aws import (
+    create_cloudwatch_client,
+    create_ec2_client,
+    create_sts_client,
+)
 from aws_infra_ops_mcp.policy import validate_instance, validate_lookback_minutes
+from aws_infra_ops_mcp.runtime_identity import validate_runtime_identity
 from aws_infra_ops_mcp.tools.instance_resolution import resolve_approved_instance
 
 PERIOD_SECONDS = 300
@@ -184,6 +189,7 @@ def get_instance_metrics(instance_name: str, minutes: int = 60) -> dict[str, Any
     normalized_name = validate_instance(instance_name)
     validated_minutes = validate_lookback_minutes(minutes)
     try:
+        validate_runtime_identity(create_sts_client())
         ec2_client = create_ec2_client()
         cloudwatch_client = create_cloudwatch_client()
     except (NoRegionError, NoCredentialsError, ClientError, BotoCoreError) as error:

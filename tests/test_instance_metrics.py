@@ -261,6 +261,8 @@ def test_default_lookback_and_client_factories_are_injectable(
     monkeypatch.setattr(
         metrics_module, "create_cloudwatch_client", lambda: cloudwatch
     )
+    monkeypatch.setattr(metrics_module, "create_sts_client", object)
+    monkeypatch.setattr(metrics_module, "validate_runtime_identity", lambda _: {})
 
     assert get_instance_metrics("web01")["lookback_minutes"] == 60
     assert cloudwatch.request is not None

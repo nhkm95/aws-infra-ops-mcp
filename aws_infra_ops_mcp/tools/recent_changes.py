@@ -7,12 +7,17 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, NoRegionError
 
-from aws_infra_ops_mcp.aws import create_cloudtrail_client, create_ec2_client
+from aws_infra_ops_mcp.aws import (
+    create_cloudtrail_client,
+    create_ec2_client,
+    create_sts_client,
+)
 from aws_infra_ops_mcp.policy import (
     validate_change_lookback_hours,
     validate_change_maximum_results,
     validate_instance,
 )
+from aws_infra_ops_mcp.runtime_identity import validate_runtime_identity
 from aws_infra_ops_mcp.tools.instance_resolution import resolve_approved_instance
 from aws_infra_ops_mcp.tools.service_status import _aws_error_message
 
@@ -47,14 +52,13 @@ ALLOWED_EVENT_SOURCES = {
     "UpdateAssociation": "ssm.amazonaws.com",
 }
 LOOKUP_PAGE_SIZE = 50
-MAX_SCANNED_EVENTS = 500
-MAX_LOOKUP_PAGES = 20
+MAX_SCANNED_EVENTS_PER_EVENT = 500
+MAX_LOOKUP_PAGES_PER_EVENT = 20
 MAX_RAW_EVENT_CHARS = 64_000
 MAX_FIELD_CHARS = 512
 MAX_SOURCE_CHARS = 128
 MAX_TIMESTAMP_CHARS = 64
 MAX_TOTAL_RESPONSE_CHARS = 64_000
-MAX_NODES_INSPECTED = 2_000
 LIMITATIONS = [
     (
         "CloudTrail records AWS API activity, not commands entered through SSH "
@@ -87,23 +91,87 @@ def _region(client: Any) -> str:
     return region
 
 
-def _references_instance(value: Any, instance_id: str) -> bool:
-    """Defensively find an exact instance reference in approved event sections."""
-    pending = [value]
-    inspected = 0
-    while pending and inspected < MAX_NODES_INSPECTED:
-        current = pending.pop()
-        inspected += 1
-        if isinstance(current, str):
-            if current == instance_id:
+def _resource_matches(value: Any, instance_id: str, *, lookup: bool) -> bool:
+    """Match an instance only in documented resource-name or ARN fields."""
+    if not isinstance(value, list):
+        return False
+    name_key = "ResourceName" if lookup else "resourceName"
+    for resource in value:
+        if not isinstance(resource, dict):
+            continue
+        if resource.get(name_key) == instance_id:
+            return True
+        arn = resource.get("ARN")
+        if not lookup:
+            arn = resource.get("arn", arn)
+        if isinstance(arn, str) and arn.startswith("arn:"):
+            arn_resource = arn.rsplit(":", maxsplit=1)[-1]
+            if arn_resource == f"instance/{instance_id}":
                 return True
-            if current.startswith("arn:") and instance_id in current.split("/"):
-                return True
-        elif isinstance(current, dict):
-            pending.extend(current.values())
-        elif isinstance(current, list):
-            pending.extend(current)
     return False
+
+
+def _exact_string_list(value: Any, instance_id: str) -> bool:
+    return isinstance(value, list) and any(item == instance_id for item in value)
+
+
+def _instance_id_target_matches(value: Any, instance_id: str) -> bool:
+    """Match only literal InstanceIds targets, never tag-based targets."""
+    if not isinstance(value, list):
+        return False
+    for target in value:
+        if not isinstance(target, dict):
+            continue
+        key = target.get("Key", target.get("key"))
+        values = target.get("Values", target.get("values"))
+        if key == "InstanceIds" and _exact_string_list(values, instance_id):
+            return True
+    return False
+
+
+def _ec2_instances_set_matches(value: Any, instance_id: str) -> bool:
+    """Match the EC2 API's documented instancesSet.items[].instanceId shape."""
+    if not isinstance(value, dict):
+        return False
+    items = value.get("items")
+    if not isinstance(items, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("instanceId") == instance_id
+        for item in items
+    )
+
+
+def _request_match(
+    event_name: str, request_parameters: Any, instance_id: str
+) -> str | None:
+    """Return controlled provenance for an event-specific request match."""
+    if not isinstance(request_parameters, dict):
+        return None
+
+    if event_name == "StartSession":
+        if request_parameters.get("target") == instance_id:
+            return "request_parameters.target"
+        return None
+
+    if event_name == "SendCommand":
+        if _exact_string_list(request_parameters.get("instanceIds"), instance_id):
+            return "request_parameters.instance_ids"
+        if _instance_id_target_matches(
+            request_parameters.get("targets"), instance_id
+        ):
+            return "request_parameters.targets.instance_ids"
+        return None
+
+    if request_parameters.get("instanceId") == instance_id:
+        return "request_parameters.instance_id"
+    if _exact_string_list(request_parameters.get("instanceIds"), instance_id):
+        return "request_parameters.instance_ids"
+    if _ec2_instances_set_matches(
+        request_parameters.get("instancesSet"), instance_id
+    ):
+        return "request_parameters.instances_set"
+    return None
 
 
 def _actor(event: dict[str, Any]) -> str | None:
@@ -155,7 +223,7 @@ def _event_time(value: Any) -> datetime | None:
 def _parse_event(
     lookup_event: Any,
     instance_id: str,
-) -> tuple[datetime, dict[str, Any]] | None:
+) -> tuple[datetime, str | None, dict[str, Any]] | None:
     """Parse and reduce one lookup result without exposing its raw event."""
     if not isinstance(lookup_event, dict):
         return None
@@ -180,14 +248,15 @@ def _parse_event(
     ):
         return None
 
-    matched_on = []
-    if _references_instance(lookup_event.get("Resources"), instance_id) or (
-        _references_instance(event.get("resources"), instance_id)
-    ):
-        matched_on.append("instance_id")
-    elif _references_instance(event.get("requestParameters"), instance_id):
-        matched_on.append("instance_id")
-    if not matched_on:
+    if _resource_matches(lookup_event.get("Resources"), instance_id, lookup=True):
+        matched_on = "lookup_resources.resource_name"
+    elif _resource_matches(event.get("resources"), instance_id, lookup=False):
+        matched_on = "cloudtrail_event.resources"
+    else:
+        matched_on = _request_match(
+            event_name, event.get("requestParameters"), instance_id
+        )
+    if matched_on is None:
         return None
 
     timestamp = _event_time(lookup_event.get("EventTime"))
@@ -196,7 +265,13 @@ def _parse_event(
     if timestamp is None:
         return None
 
-    return timestamp, {
+    event_id = lookup_event.get("EventId")
+    if not isinstance(event_id, str) or not event_id:
+        event_id = event.get("eventID")
+    if not isinstance(event_id, str) or not event_id:
+        event_id = None
+
+    return timestamp, event_id, {
         "event_time": timestamp.isoformat()[:MAX_TIMESTAMP_CHARS],
         "event_name": event_name,
         "event_source": _bounded(event_source, MAX_SOURCE_CHARS),
@@ -230,9 +305,7 @@ def inspect_recent_changes(
     end_time = checked_at
     start_time = end_time - timedelta(hours=validated_hours)
     parsed_events: list[tuple[datetime, dict[str, Any]]] = []
-    scanned = 0
-    pages = 0
-    next_token: str | None = None
+    seen_event_ids: set[str] = set()
     truncated = False
 
     try:
@@ -241,64 +314,73 @@ def inspect_recent_changes(
         )
         instance_id = instance["InstanceId"]
 
-        while True:
-            if pages >= MAX_LOOKUP_PAGES:
-                truncated = True
-                break
-            remaining_scan = MAX_SCANNED_EVENTS - scanned
-            if remaining_scan <= 0:
-                truncated = True
-                break
-            request: dict[str, Any] = {
-                "LookupAttributes": [
-                    {
-                        "AttributeKey": "ResourceName",
-                        "AttributeValue": instance_id,
-                    }
-                ],
-                "StartTime": start_time,
-                "EndTime": end_time,
-                "MaxResults": min(LOOKUP_PAGE_SIZE, remaining_scan),
-            }
-            if next_token:
-                request["NextToken"] = next_token
+        for lookup_event_name in sorted(ALLOWED_EVENT_NAMES):
+            scanned_for_event = 0
+            pages_for_event = 0
+            next_token: str | None = None
 
-            response = cloudtrail_client.lookup_events(**request)
-            pages += 1
-            lookup_events = response.get("Events", [])
-            if not isinstance(lookup_events, list):
-                lookup_events = []
-
-            for index, lookup_event in enumerate(lookup_events):
-                scanned += 1
-                parsed = _parse_event(lookup_event, instance_id)
-                if parsed is not None:
-                    parsed_events.append(parsed)
-                    if len(parsed_events) >= validated_maximum:
-                        truncated = (
-                            index < len(lookup_events) - 1
-                            or bool(response.get("NextToken"))
-                        )
-                        break
-                if scanned >= MAX_SCANNED_EVENTS:
-                    truncated = (
-                        index < len(lookup_events) - 1
-                        or bool(response.get("NextToken"))
-                    )
+            while True:
+                remaining_scan = (
+                    MAX_SCANNED_EVENTS_PER_EVENT - scanned_for_event
+                )
+                if remaining_scan <= 0:
+                    truncated = True
                     break
 
-            if len(parsed_events) >= validated_maximum:
-                break
-            if scanned >= MAX_SCANNED_EVENTS:
-                break
-            token = response.get("NextToken")
-            if not isinstance(token, str) or not token:
-                break
-            next_token = token
+                request: dict[str, Any] = {
+                    "LookupAttributes": [
+                        {
+                            "AttributeKey": "EventName",
+                            "AttributeValue": lookup_event_name,
+                        }
+                    ],
+                    "StartTime": start_time,
+                    "EndTime": end_time,
+                    "MaxResults": min(LOOKUP_PAGE_SIZE, remaining_scan),
+                }
+                if next_token:
+                    request["NextToken"] = next_token
+
+                response = cloudtrail_client.lookup_events(**request)
+                pages_for_event += 1
+                lookup_events = response.get("Events", [])
+                if not isinstance(lookup_events, list):
+                    lookup_events = []
+
+                events_to_scan = lookup_events[:remaining_scan]
+                scanned_for_event += len(events_to_scan)
+                if len(events_to_scan) < len(lookup_events):
+                    truncated = True
+                if scanned_for_event >= MAX_SCANNED_EVENTS_PER_EVENT:
+                    truncated = True
+
+                for lookup_event in events_to_scan:
+                    parsed = _parse_event(lookup_event, instance_id)
+                    if parsed is None:
+                        continue
+                    timestamp, event_id, sanitized_event = parsed
+                    if event_id is not None:
+                        if event_id in seen_event_ids:
+                            continue
+                        seen_event_ids.add(event_id)
+                    parsed_events.append((timestamp, sanitized_event))
+
+                token = response.get("NextToken")
+                if not isinstance(token, str) or not token:
+                    break
+                if (
+                    pages_for_event >= MAX_LOOKUP_PAGES_PER_EVENT
+                    or scanned_for_event >= MAX_SCANNED_EVENTS_PER_EVENT
+                ):
+                    truncated = True
+                    break
+                next_token = token
     except (NoRegionError, NoCredentialsError, ClientError, BotoCoreError) as error:
         raise RuntimeError(_aws_error_message("EC2 or CloudTrail", error)) from error
 
     parsed_events.sort(key=lambda item: item[0], reverse=True)
+    if len(parsed_events) > validated_maximum:
+        truncated = True
     events: list[dict[str, Any]] = []
     response_chars = 0
     for _, event in parsed_events[:validated_maximum]:
@@ -334,6 +416,7 @@ def get_recent_changes(
     validated_hours = validate_change_lookback_hours(hours)
     validated_maximum = validate_change_maximum_results(maximum_results)
     try:
+        validate_runtime_identity(create_sts_client())
         ec2_client = create_ec2_client()
         cloudtrail_client = create_cloudtrail_client()
     except (NoRegionError, NoCredentialsError, ClientError, BotoCoreError) as error:

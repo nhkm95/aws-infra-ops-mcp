@@ -185,6 +185,19 @@ def test_empty_journal_returns_empty_entries() -> None:
     assert result["truncated"] is False
 
 
+def test_ssm_no_entries_sentinel_returns_empty_entries() -> None:
+    result = inspect(FakeSsm([success("-- No entries --\n")]))
+    assert result["entries"] == []
+    assert result["result_count"] == 0
+    assert result["truncated"] is False
+
+
+def test_no_entries_text_is_preserved_when_it_is_a_legitimate_journal_line() -> None:
+    result = inspect(FakeSsm([success("prefix\n-- No entries --\nsuffix\n")]))
+    assert result["entries"] == ["prefix", "-- No entries --", "suffix"]
+    assert result["result_count"] == 3
+
+
 def test_output_is_truncated_by_entry_count_and_line_length() -> None:
     lines = ["x" * (MAX_LINE_CHARS + 20), *(f"line {n}" for n in range(10))]
     result = inspect(
@@ -255,6 +268,8 @@ def test_public_wrapper_uses_injected_factories_without_live_aws(
     ssm = FakeSsm([success("entry")])
     monkeypatch.setattr(journal_module, "create_ec2_client", lambda: ec2)
     monkeypatch.setattr(journal_module, "create_ssm_client", lambda: ssm)
+    monkeypatch.setattr(journal_module, "create_sts_client", object)
+    monkeypatch.setattr(journal_module, "validate_runtime_identity", lambda _: {})
 
     result = journal_module.get_service_journal("web01", "nginx")
 
