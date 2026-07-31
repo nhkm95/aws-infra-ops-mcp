@@ -9,6 +9,7 @@ def test_server_exposes_only_the_expected_read_only_tools() -> None:
     assert {tool.name for tool in tools} == {
         "get_instance_health",
         "get_instance_metrics",
+        "get_recent_changes",
         "get_recent_errors",
         "get_service_journal",
         "get_service_status",
@@ -21,6 +22,7 @@ def test_tool_schemas_include_expected_inputs() -> None:
     health_schema = tools["get_instance_health"].inputSchema
     metrics_schema = tools["get_instance_metrics"].inputSchema
     error_schema = tools["get_recent_errors"].inputSchema
+    changes_schema = tools["get_recent_changes"].inputSchema
     journal_schema = tools["get_service_journal"].inputSchema
     service_schema = tools["get_service_status"].inputSchema
 
@@ -30,6 +32,9 @@ def test_tool_schemas_include_expected_inputs() -> None:
     assert error_schema["properties"]["maximum_results"]["default"] == 10
     assert error_schema["properties"]["minutes"]["default"] == 60
     assert error_schema["required"] == ["instance_name"]
+    assert changes_schema["properties"]["hours"]["default"] == 24
+    assert changes_schema["properties"]["maximum_results"]["default"] == 25
+    assert changes_schema["required"] == ["instance_name"]
     assert journal_schema["properties"]["minutes"]["default"] == 60
     assert journal_schema["properties"]["maximum_results"]["default"] == 50
     assert set(journal_schema["required"]) == {"instance_name", "service_name"}

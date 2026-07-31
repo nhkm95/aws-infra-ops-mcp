@@ -11,6 +11,8 @@ MIN_LOOKBACK_MINUTES = 5
 MAX_LOOKBACK_MINUTES = 1440
 ALLOWED_JOURNAL_LOOKBACK_MINUTES = frozenset({5, 10, 15, 30, 60, 120})
 ALLOWED_JOURNAL_RESULT_LIMITS = frozenset({10, 25, 50, 100})
+ALLOWED_CHANGE_LOOKBACK_HOURS = frozenset({1, 6, 12, 24, 48, 72, 168})
+ALLOWED_CHANGE_RESULT_LIMITS = frozenset({10, 25, 50})
 
 
 def validate_instance(instance_name: str) -> str:
@@ -70,5 +72,25 @@ def validate_journal_maximum_results(maximum_results: int) -> int:
         raise ValueError(
             "maximum_results must be one of "
             f"{sorted(ALLOWED_JOURNAL_RESULT_LIMITS)}"
+        )
+    return maximum_results
+
+
+def validate_change_lookback_hours(hours: int) -> int:
+    """Enforce the fixed CloudTrail Event History lookback allowlist."""
+    if hours not in ALLOWED_CHANGE_LOOKBACK_HOURS:
+        raise ValueError(
+            "hours must be one of "
+            f"{sorted(ALLOWED_CHANGE_LOOKBACK_HOURS)}"
+        )
+    return hours
+
+
+def validate_change_maximum_results(maximum_results: int) -> int:
+    """Enforce the fixed CloudTrail result-limit allowlist."""
+    if maximum_results not in ALLOWED_CHANGE_RESULT_LIMITS:
+        raise ValueError(
+            "maximum_results must be one of "
+            f"{sorted(ALLOWED_CHANGE_RESULT_LIMITS)}"
         )
     return maximum_results

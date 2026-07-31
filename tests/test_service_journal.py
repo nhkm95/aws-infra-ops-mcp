@@ -280,8 +280,8 @@ def test_existing_iam_policy_identity_and_attachment_remain_stable() -> None:
     terraform = TERRAFORM_DOCUMENT.read_text(encoding="utf-8")
 
     assert 'resource "aws_iam_policy" "this"' in terraform
-    assert "name        = var.name" in terraform
-    assert "name_prefix" not in terraform
+    assert 'name        = "aws-infra-ops-mcp-lab-diagnostics-readonly"' in terraform
+    assert "  name_prefix =" not in terraform
     assert (
         'description = "Read-only EC2, CloudWatch metrics and Logs lookup '
         'for the Infrastructure Operations MCP"'

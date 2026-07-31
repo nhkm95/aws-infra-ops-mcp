@@ -5,6 +5,7 @@ from mcp.server.fastmcp import FastMCP
 from aws_infra_ops_mcp.tools import (
     get_instance_health as inspect_instance_health,
     get_instance_metrics as inspect_instance_metrics,
+    get_recent_changes as inspect_recent_changes,
     get_recent_errors as inspect_recent_errors,
     get_service_journal as inspect_service_journal,
     get_service_status as inspect_service_status,
@@ -15,8 +16,8 @@ mcp = FastMCP(
     instructions=(
         "Use these read-only tools to gather evidence about the approved AWS "
         "lab instance. Instance health, fixed CloudWatch metrics, recent errors, "
-        "nginx service status, and a bounded nginx journal are backed by AWS "
-        "read-only APIs."
+        "bounded CloudTrail control-plane activity, nginx service status, and a "
+        "bounded nginx journal are backed by AWS read-only APIs."
     ),
 )
 
@@ -41,6 +42,16 @@ def get_recent_errors(
 ) -> dict:
     """Get recent CloudWatch application and operating-system errors."""
     return inspect_recent_errors(instance_name, maximum_results, minutes)
+
+
+@mcp.tool()
+def get_recent_changes(
+    instance_name: str,
+    hours: int = 24,
+    maximum_results: int = 25,
+) -> dict:
+    """Get bounded CloudTrail activity associated with an approved instance."""
+    return inspect_recent_changes(instance_name, hours, maximum_results)
 
 
 @mcp.tool()

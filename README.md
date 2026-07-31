@@ -3,9 +3,9 @@
 This project runs a small, local server that helps Codex investigate one AWS
 lab host using live evidence. It is useful when you want an assistant to check
 whether an EC2 instance is healthy, inspect a fixed set of performance metrics,
-look for recent system or nginx errors, inspect nginx service state, and read a
-bounded nginx systemd journal without giving the assistant general AWS or shell
-access.
+look for recent system or nginx errors, inspect nginx service state, read a
+bounded nginx systemd journal, and correlate bounded AWS control-plane activity
+without giving the assistant general AWS or shell access.
 
 MCP (Model Context Protocol) is a standard way for an AI client to call
 well-defined tools provided by another process. Here, Codex starts the server
@@ -17,13 +17,14 @@ The server is read-only. It has no generic shell tool and no restart, stop,
 deploy, configuration, or other remediation tools. It supports only the
 allowlisted instance `web01` and the service `nginx`.
 
-## What the five tools check
+## What the six tools check
 
 | Tool | AWS source | What it returns |
 | --- | --- | --- |
 | `get_instance_health` | EC2 | Instance state plus AWS system and instance status checks. |
 | `get_instance_metrics` | CloudWatch metrics | CPU average/maximum, status-check maximums, and total network bytes over a bounded lookback. |
 | `get_recent_errors` | CloudWatch Logs Insights | A bounded set of recent error-related events from the approved system and nginx log groups. |
+| `get_recent_changes` | CloudTrail Event History | A bounded, reduced set of allowlisted AWS API events that reference the approved instance. |
 | `get_service_status` | Systems Manager | nginx active state, sub-state, and boot-enabled state from a fixed, restricted SSM document. |
 | `get_service_journal` | Systems Manager | A bounded nginx systemd journal from a separate fixed, restricted SSM document. |
 
@@ -48,6 +49,31 @@ The server always queries:
 /aws/mcp-lab/web01/system
 /aws/mcp-lab/web01/nginx
 ```
+
+`get_recent_changes` contributes CloudTrail Event History evidence for
+correlating AWS control-plane changes with an incident. It accepts only the
+approved instance name, lookbacks of 1, 6, 12, 24, 48, 72, or 168 hours, and
+result limits of 10, 25, or 50. The caller cannot provide an instance ID,
+CloudTrail query, event name, or lookup attribute.
+
+The tool uses the resolved instance ID in a fixed `ResourceName` lookup and
+then filters every parsed result locally. It returns only events from this
+fixed scope: EC2 start, stop, reboot, attribute and instance-profile changes;
+SSM Run Command; Session Manager start and termination; and SSM association
+creation, update, and deletion. An event must also reference the approved
+instance ID in its resources or request parameters. Security-group and network
+events are intentionally excluded because this tool does not resolve and prove
+the instance's attached network resources.
+
+Each result contains only the UTC event time, event name, event source, a
+compact actor value when available, CloudTrail's read-only indicator, and the
+fact that it matched the instance ID. Actor values are CloudTrail attribution:
+they can identify an AWS principal or session, but they do not prove which
+human intended an action. Raw `CloudTrailEvent` JSON, access keys, tokens,
+request headers, source IP addresses, user-agent strings, and full identity or
+session context are never returned. CloudTrail records AWS API activity; it
+cannot see commands entered through SSH or commands typed inside an interactive
+SSM session.
 
 `get_service_status` invokes only the Terraform-managed
 `mcp-lab-get-nginx-status` document. That document has no parameters and runs a
@@ -75,6 +101,7 @@ server.py
   ├─ get_instance_health ── EC2 status APIs
   ├─ get_instance_metrics ─ CloudWatch GetMetricData
   ├─ get_recent_errors ──── CloudWatch Logs Insights
+  ├─ get_recent_changes ─── CloudTrail Event History
   ├─ get_service_status ─── restricted SSM document ── web01
   └─ get_service_journal ── restricted SSM document ── web01
 ```
@@ -87,12 +114,15 @@ Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
 ## Security boundaries
 
 - The MCP runtime role can perform only the diagnostic API calls required by
-  the four tools.
+  the six tools.
 - Instance and service names are allowlisted in code.
 - CloudWatch metric and log queries are fixed. Metrics are limited to the
   documented `AWS/EC2` allowlist, while logs are limited to two log groups. The
   `logs:StartQuery` IAM resources use the required log-group ARN form ending in
   `:*`; Terraform normalizes inputs before adding that suffix.
+- CloudTrail lookup parameters, event names, event sources, time windows, and
+  result limits are fixed or enumerated. Results are locally matched to the
+  tag-resolved approved instance and reduced before return.
 - The status SSM document accepts no user parameters and cannot be replaced
   with an arbitrary Run Command document.
 - The journal SSM document accepts only enumerated numeric bounds. Its nginx
@@ -108,10 +138,12 @@ Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
 
 Some AWS read-only APIs require `Resource: "*"`, including EC2 Describe calls,
 `cloudwatch:GetMetricData`, and the query-level `logs:GetQueryResults` and
-`logs:StopQuery` calls. The runtime policy grants only that single CloudWatch
-metrics action—no write, alarm, or broad CloudWatch read permissions. The
+`logs:StopQuery` calls. CloudTrail `LookupEvents` also requires `Resource: "*"`
+because it does not support resource-level permissions. The runtime policy
+adds only `cloudtrail:LookupEvents`: it grants no CloudTrail write,
+trail-management, CloudTrail Lake, S3, or organization permissions. The
 resource-scoped actions remain limited to the two approved log groups, the
-exact lab instance, and the fixed SSM document.
+exact lab instance, and the fixed SSM documents.
 
 ## Prerequisites
 
@@ -296,6 +328,16 @@ nginx. The custom SSM document internally uses the `aws:runShellScript`
 document plugin to execute its fixed, reviewed `journalctl` command. This is
 distinct from granting access to the AWS-managed `AWS-RunShellScript` document,
 which the runtime role is not permitted to invoke.
+
+Correlate operating-system evidence with AWS control-plane activity:
+
+```text
+Did an approved AWS API action involving web01 occur near the nginx outage?
+Call get_recent_changes with a 6-hour lookback and at most 25 results, then
+compare its timestamps with the nginx journal. Treat the actor as CloudTrail
+attribution, not proof of human intent, and do not claim it contains commands
+entered inside SSH or an interactive SSM session.
+```
 
 Correlate an outage:
 

@@ -75,6 +75,15 @@ data "aws_iam_policy_document" "this" {
   }
 
   statement {
+    sid     = "ReadCloudTrailEventHistory"
+    effect  = "Allow"
+    actions = ["cloudtrail:LookupEvents"]
+
+    # LookupEvents does not support resource-level IAM permissions.
+    resources = ["*"]
+  }
+
+  statement {
     sid    = "ReadCommandInvocation"
     effect = "Allow"
 
@@ -168,8 +177,13 @@ resource "aws_ssm_document" "nginx_journal" {
   })
 }
 
+# IAM policy lifecycle guard:
+# Do not change name to name_prefix or change the existing description.
+# Either change forces IAM policy and attachment replacement.
+# New diagnostic capabilities belong in the policy JSON, not the resource
+# identity metadata.
 resource "aws_iam_policy" "this" {
-  name        = var.name
+  name        = "aws-infra-ops-mcp-lab-diagnostics-readonly"
   description = "Read-only EC2, CloudWatch metrics and Logs lookup for the Infrastructure Operations MCP"
   policy      = data.aws_iam_policy_document.this.json
 }

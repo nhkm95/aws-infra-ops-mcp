@@ -28,3 +28,8 @@ def create_cloudwatch_client() -> Any:
 def create_ssm_client() -> Any:
     """Create an SSM client from Boto3's standard session configuration."""
     return boto3.client("ssm")
+
+
+def create_cloudtrail_client() -> Any:
+    """Create a CloudTrail client from Boto3's standard session configuration."""
+    return boto3.client("cloudtrail")
