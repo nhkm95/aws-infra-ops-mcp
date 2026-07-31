@@ -3,8 +3,10 @@
 This directory defines a small AWS lab for the Infrastructure Operations MCP.
 It creates one Amazon Linux 2023 `web01` instance in a public subnet, sends
 system and nginx error logs to CloudWatch Logs, enables Systems Manager, and
-creates—but does not attach—the customer-managed policy needed by the MCP's
-AWS-backed instance-health tool.
+creates the customer-managed diagnostics policy attached to the dedicated
+`aws-infra-ops-mcp-lab-runtime` role used by the local MCP server. This MCP
+runtime role is separate from the EC2 instance role that lets `web01` register
+with Systems Manager and publish logs.
 
 No inbound network access is created. The instance security group has no
 ingress rules, including no SSH (22) or HTTP (80). Administration and validation
@@ -35,6 +37,10 @@ The `mcp_readonly` module creates the customer-managed
 dedicated `aws-infra-ops-mcp-lab-runtime` role. The trusted IAM Identity Center
 permission-set role assumes that runtime role for sessions of no more than one
 hour. The runtime role has no inline policy or instance profile.
+Its CloudTrail access is limited to `cloudtrail:LookupEvents` with
+`Resource = "*"`, which AWS requires because Event History lookup does not
+support resource-level permissions. It has no CloudTrail write,
+trail-management, Lake, S3, or organization permissions.
 
 ## Potential costs
 

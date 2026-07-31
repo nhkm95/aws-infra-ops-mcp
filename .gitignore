@@ -36,6 +36,7 @@ crash.log
 crash.*.log
 *.tfplan
 tfplan
+tfplan-*
 *.tfvars
 *.tfvars.json
 !*.tfvars.example

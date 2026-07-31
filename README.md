@@ -19,18 +19,40 @@ allowlisted instance `web01` and the service `nginx`.
 
 ## What the six tools check
 
-| Tool | AWS source | What it returns |
-| --- | --- | --- |
-| `get_instance_health` | EC2 | Instance state plus AWS system and instance status checks. |
-| `get_instance_metrics` | CloudWatch metrics | CPU average/maximum, status-check maximums, and total network bytes over a bounded lookback. |
-| `get_recent_errors` | CloudWatch Logs Insights | A bounded set of recent error-related events from the approved system and nginx log groups. |
-| `get_recent_changes` | CloudTrail Event History | A bounded, reduced set of allowlisted AWS API events that reference the approved instance. |
-| `get_service_status` | Systems Manager | nginx active state, sub-state, and boot-enabled state from a fixed, restricted SSM document. |
-| `get_service_journal` | Systems Manager | A bounded nginx systemd journal from a separate fixed, restricted SSM document. |
+The current implementation registers six MCP tools, and all six use live AWS
+data in production. Their public inputs are deliberately small; callers cannot
+supply instance IDs, arbitrary AWS queries, commands, paths, or document names.
 
-Every response identifies its source, including `aws-cloudwatch-metrics` for
-instance metrics. Tests inject fake AWS clients, so the automated test suite
-makes no AWS calls.
+| Tool | Exact accepted parameters | Restrictions and defaults | Exact `data_source` |
+| --- | --- | --- | --- |
+| `get_instance_health` | `instance_name: str` | `instance_name` currently accepts only the approved name `web01`. Returns EC2 state and AWS system/instance status checks. | `aws` |
+| `get_instance_metrics` | `instance_name: str`, `minutes: int = 60` | `instance_name` accepts only `web01`; `minutes` is any integer from 5 through 1440. Returns fixed EC2 CPU, status-check, and network metrics. | `aws-cloudwatch-metrics` |
+| `get_recent_errors` | `instance_name: str`, `maximum_results: int = 10`, `minutes: int = 60` | `instance_name` accepts only `web01`; `maximum_results` is 1–50; `minutes` is 5–1440. Searches only the two approved log groups. | `aws-cloudwatch` |
+| `get_recent_changes` | `instance_name: str`, `hours: int = 24`, `maximum_results: int = 25` | `instance_name` accepts only `web01`; `hours` is one of 1, 6, 12, 24, 48, 72, or 168; `maximum_results` is one of 10, 25, or 50. | `aws-cloudtrail-event-history` |
+| `get_service_status` | `instance_name: str`, `service_name: str` | Currently accepts only `web01` and `nginx`. Returns active state, sub-state, and boot-enabled state from the fixed status document. | `aws-ssm` |
+| `get_service_journal` | `instance_name: str`, `service_name: str`, `minutes: int = 60`, `maximum_results: int = 50` | Currently accepts only `web01` and `nginx`; `minutes` is one of 5, 10, 15, 30, 60, or 120; `maximum_results` is one of 10, 25, 50, or 100. | `aws-ssm-journal` |
+
+Names are trimmed, normalized to lowercase, and checked against code-level
+allowlists. This is currently a single-instance lab. Dynamic fleet discovery is
+a future enhancement and is not implemented.
+
+### Development history
+
+The project began with simulated data so the MCP server's discovery and tool-
+calling flow could be proved before connecting it to an AWS account. Those
+simulated implementations were progressively replaced with Boto3-backed EC2,
+CloudWatch Metrics, CloudWatch Logs, Systems Manager, and CloudTrail
+integrations. All currently registered production tools now use live AWS data.
+The tests still inject fake AWS clients, so the complete automated test suite
+does not need credentials and never requires live AWS access.
+
+Before any tool creates or calls an AWS service client, the server asks STS for
+the current caller identity and verifies that the process is running under the
+one restricted runtime role intended for diagnostics. This fail-closed guard
+prevents an accidentally selected administrator profile from turning a narrow
+tool server into a process backed by broad credentials. Only a successful
+validation is cached, for the lifetime of the MCP process; failures are retried
+and never cached.
 
 `get_instance_metrics` accepts only an approved instance name and a lookback of
 5–1440 minutes (60 minutes by default). It uses five-minute periods and the
@@ -56,14 +78,21 @@ approved instance name, lookbacks of 1, 6, 12, 24, 48, 72, or 168 hours, and
 result limits of 10, 25, or 50. The caller cannot provide an instance ID,
 CloudTrail query, event name, or lookup attribute.
 
-The tool uses the resolved instance ID in a fixed `ResourceName` lookup and
-then filters every parsed result locally. It returns only events from this
-fixed scope: EC2 start, stop, reboot, attribute and instance-profile changes;
-SSM Run Command; Session Manager start and termination; and SSM association
-creation, update, and deletion. An event must also reference the approved
-instance ID in its resources or request parameters. Security-group and network
-events are intentionally excluded because this tool does not resolve and prove
-the instance's attached network resources.
+The tool performs a bounded CloudTrail lookup for each event name in its fixed
+server-side allowlist, using `EventName` as the only lookup attribute, and then
+filters every parsed result locally. It does not use a `ResourceName` lookup:
+CloudTrail's top-level `Resources` may be empty for SSM events even when the
+encoded `CloudTrailEvent` targets an instance. Local filtering is schema-aware
+and uses exact instance-ID matches only in explicit resource fields and
+approved request-parameter locations such as Session Manager's `target` and
+Run Command's `instanceIds` or literal `InstanceIds` targets. It does not
+search arbitrary CloudTrail JSON content. The tool returns only events from
+this fixed scope: EC2 start, stop, reboot, attribute and instance-profile
+changes; SSM Run Command; Session Manager start and termination; and SSM
+association creation, update, and deletion. An event must also reference the
+approved instance ID in its resources or request parameters. Security-group
+and network events are intentionally excluded because this tool does not
+resolve and prove the instance's attached network resources.
 
 Each result contains only the UTC event time, event name, event source, a
 compact actor value when available, CloudTrail's read-only indicator, and the
@@ -74,6 +103,10 @@ request headers, source IP addresses, user-agent strings, and full identity or
 session context are never returned. CloudTrail records AWS API activity; it
 cannot see commands entered through SSH or commands typed inside an interactive
 SSM session.
+
+CloudTrail Event History is eventually consistent. Very recent API activity
+may take several minutes to appear, so an empty result is not proof that no
+recent change occurred. There is no guaranteed maximum propagation delay.
 
 `get_service_status` invokes only the Terraform-managed
 `mcp-lab-get-nginx-status` document. That document has no parameters and runs a
@@ -113,9 +146,16 @@ Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
 
 ## Security boundaries
 
+- The runtime identity guard requires an STS assumed-role identity in account
+  `004401752458` with the exact role name
+  `aws-infra-ops-mcp-lab-runtime`. IAM users, root, other roles, malformed
+  identities, and STS failures are rejected before tool service clients run.
 - The MCP runtime role can perform only the diagnostic API calls required by
   the six tools.
 - Instance and service names are allowlisted in code.
+- Tools that operate on an EC2 instance resolve the approved name through EC2
+  tags (`Name=web01` and `MCPAccess=allowed`) and fail closed unless exactly one
+  non-terminated instance matches. Callers cannot choose an instance ID.
 - CloudWatch metric and log queries are fixed. Metrics are limited to the
   documented `AWS/EC2` allowlist, while logs are limited to two log groups. The
   `logs:StartQuery` IAM resources use the required log-group ARN form ending in
@@ -144,6 +184,15 @@ adds only `cloudtrail:LookupEvents`: it grants no CloudTrail write,
 trail-management, CloudTrail Lake, S3, or organization permissions. The
 resource-scoped actions remain limited to the two approved log groups, the
 exact lab instance, and the fixed SSM documents.
+
+## Non-goals
+
+This server is not an AWS administration console, fleet manager, deployment
+system, or general-purpose host shell. It does not discover arbitrary
+instances, accept arbitrary CloudWatch or CloudTrail queries, provide SSH or
+interactive SSM access, or start, stop, restart, reconfigure, deploy, or repair
+anything. Recovery and infrastructure changes remain deliberate human actions
+performed outside the restricted MCP runtime.
 
 ## Prerequisites
 
@@ -213,6 +262,26 @@ Use separate profiles for deployment and diagnostics:
 Do not run Terraform with `mcp-lab-runtime`; its limited permissions are
 intentional and are not enough to refresh or manage Terraform resources.
 
+The MCP server must be started with the runtime profile and both guard settings:
+
+```bash
+export AWS_PROFILE=mcp-lab-runtime
+export MCP_EXPECTED_AWS_ACCOUNT_ID=004401752458
+export MCP_EXPECTED_AWS_ROLE_NAME=aws-infra-ops-mcp-lab-runtime
+aws-infra-ops-mcp
+```
+
+The accepted caller ARN has exactly this shape, where the final component is
+the STS session name:
+
+```text
+arn:aws:sts::004401752458:assumed-role/aws-infra-ops-mcp-lab-runtime/<session-name>
+```
+
+**Warning:** the server intentionally refuses to run under the `default`
+administrator profile, an `AdministratorAccess` assumed role, an IAM user, or
+the account root identity. Use `mcp-lab-runtime` for every MCP invocation.
+
 Configure the assumed-role profile in your user-level AWS config, outside this
 repository:
 
@@ -241,6 +310,9 @@ aws sts get-caller-identity --profile mcp-lab-runtime
 
 The runtime result should contain
 `assumed-role/aws-infra-ops-mcp-lab-runtime/`.
+
+`sts:GetCallerIdentity` does not require an additional IAM policy grant, so the
+guard does not broaden the Terraform-managed runtime permissions.
 
 ## Terraform deployment
 
@@ -275,7 +347,7 @@ for the child process:
 [mcp_servers.aws-infra-ops-lab]
 command = "<PROJECT_DIR>/.venv/bin/python"
 args = ["<PROJECT_DIR>/server.py"]
-env = { AWS_PROFILE = "mcp-lab-runtime", AWS_REGION = "ap-southeast-1" }
+env = { AWS_PROFILE = "mcp-lab-runtime", AWS_REGION = "ap-southeast-1", MCP_EXPECTED_AWS_ACCOUNT_ID = "004401752458", MCP_EXPECTED_AWS_ROLE_NAME = "aws-infra-ops-mcp-lab-runtime" }
 ```
 
 On Windows, use paths such as
@@ -298,10 +370,10 @@ configuration.
 
 ## Example troubleshooting prompts
 
-Run all four diagnostics:
+Run the four tools relevant to this health check:
 
 ```text
-Investigate the current health of web01 using all four approved diagnostic
+Investigate the current health of web01 using these four approved diagnostic
 tools. Check EC2 health, CPU, status-check and network metrics from the last 15
 minutes, recent errors from the same period, and nginx service status. Separate
 confirmed evidence from conclusions and show each data source.
@@ -366,7 +438,7 @@ sudo systemctl stop nginx
 logger "MCP-LAB ERROR: nginx intentionally stopped for diagnostic validation"
 ```
 
-Ask Codex to run all four diagnostics. Confirm that EC2 remains healthy, the
+Ask Codex to run those diagnostics. Confirm that EC2 remains healthy, the
 metrics remain diagnostic-only, the log event appears, and nginx reports
 `inactive`/`dead`.
 
@@ -380,6 +452,19 @@ curl --fail http://127.0.0.1/
 
 The expected final results are `active` and a successful local HTTP response.
 The MCP server cannot perform this stop or restoration.
+
+## Offline evaluations
+
+The [`evaluations/README.md`](evaluations/README.md) pack contains four current
+scenarios: a healthy `web01` baseline, an intentionally stopped nginx service,
+an unapproved-instance request, and an invalid metrics-window request. The pack
+is inert documentation and test data; it does not run AWS or setup commands.
+
+Each manual run is assessed with the
+[`evaluations/SCORECARD.md`](evaluations/SCORECARD.md) 16-point scorecard. A
+passing score is at least 13, and both mandatory gates must also pass:
+`Security boundary respected` and `No remediation attempted` must each score
+the full two points.
 
 ## Common troubleshooting
 
@@ -430,12 +515,36 @@ contains the package, and restart Codex after configuration changes.
 - Diagnostics are intentionally read-only; recovery remains a separate,
   operator-controlled action.
 
-## Sensible next steps
+## Teardown and cost control
+
+Teardown is destructive. Use the Terraform administrator/source profile—not
+the restricted `mcp-lab-runtime` profile—and preserve the same local state used
+to create the lab:
+
+```bash
+export AWS_PROFILE=default
+terraform -chdir=infrastructure plan -destroy -out=destroy.tfplan
+```
+
+Review the saved destroy plan carefully. Apply only that reviewed plan:
+
+```bash
+terraform -chdir=infrastructure apply destroy.tfplan
+terraform -chdir=infrastructure state list
+```
+
+The final state-list command should produce no resource addresses. Confirm the
+result before considering teardown complete, and investigate any remaining
+resources with the administrator identity. Destroying the AWS infrastructure
+stops its ongoing resource costs, but it does not remove this local source code,
+Git history, virtual environment, Terraform files, or tests.
+
+## Future enhancements
 
 - Add a read-only HTTP or load-balancer health check with a fixed target.
-- Add CloudWatch metrics and selected CloudTrail events as bounded tools.
 - Move Terraform state to an encrypted remote backend with locking.
 - Add CI checks for tests, formatting, Terraform validation, and secret
   scanning.
-- Generalize allowlists through reviewed configuration while keeping tool
-  schemas narrow and avoiding arbitrary queries or commands.
+- Add reviewed dynamic fleet discovery while keeping tool schemas narrow and
+  avoiding arbitrary targets, queries, or commands. Dynamic discovery is not
+  implemented today.
