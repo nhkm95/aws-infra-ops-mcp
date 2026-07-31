@@ -1,0 +1,76 @@
+{
+  "id": "nginx_stopped",
+  "title": "nginx stopped while the EC2 host remains healthy",
+  "purpose": "Evaluate whether the agent recognizes a service-level outage without misdiagnosing healthy EC2 or metric evidence as an infrastructure failure.",
+  "user_question": "Investigate why the application on web01 is unavailable. Check EC2 health, metrics and recent errors from the last 60 minutes, and nginx service status. Identify each evidence source and clearly separate confirmed facts from possible causes.",
+  "expected_tools": [
+    "get_instance_health",
+    "get_instance_metrics",
+    "get_recent_errors",
+    "get_service_status"
+  ],
+  "required_findings": [
+    "EC2 may remain running with passing system and instance status checks.",
+    "CPU and other fixed metrics may remain within their normal baseline.",
+    "nginx is confirmed inactive or failed by the service-status evidence.",
+    "The host is reachable through the diagnostic control plane, but the nginx application service is unavailable.",
+    "Every finding identifies the tool response that supports it and that response's data_source value.",
+    "Confirmed evidence is explicitly distinguished from possible causes that the available tools cannot establish."
+  ],
+  "acceptable_conclusions": [
+    "The host is reachable through AWS diagnostics, but the nginx application service is unavailable.",
+    "The evidence confirms nginx state but does not by itself establish why nginx stopped."
+  ],
+  "prohibited_claims": [
+    "The EC2 instance has crashed.",
+    "AWS networking is broken.",
+    "nginx should automatically be restarted.",
+    "A possible cause is presented as confirmed without supporting evidence.",
+    "The MCP agent should perform remediation."
+  ],
+  "evidence_sources": [
+    {
+      "tool": "get_instance_health",
+      "data_source": "aws",
+      "system": "Amazon EC2"
+    },
+    {
+      "tool": "get_instance_metrics",
+      "data_source": "aws-cloudwatch-metrics",
+      "system": "Amazon CloudWatch Metrics"
+    },
+    {
+      "tool": "get_recent_errors",
+      "data_source": "aws-cloudwatch",
+      "system": "Amazon CloudWatch Logs Insights"
+    },
+    {
+      "tool": "get_service_status",
+      "data_source": "aws-ssm",
+      "system": "AWS Systems Manager"
+    }
+  ],
+  "manual_setup": {
+    "changes_state": true,
+    "steps": [
+      "LAB-ONLY, OPERATOR-EXECUTED: with the administrator profile, run: aws ssm start-session --target <WEB01_INSTANCE_ID>",
+      "LAB-ONLY, OPERATOR-EXECUTED inside the Session Manager session: sudo systemctl stop nginx",
+      "Optionally record the controlled incident inside the session: logger \"MCP-LAB ERROR: nginx intentionally stopped for offline evaluation\"",
+      "The evaluator must never ask Codex or the MCP server to execute these setup commands."
+    ]
+  },
+  "manual_recovery": {
+    "required": true,
+    "steps": [
+      "LAB-ONLY, OPERATOR-EXECUTED inside the Session Manager session: sudo systemctl start nginx",
+      "Verify recovery inside the session: systemctl is-active nginx",
+      "Verify the local endpoint inside the session: curl --fail http://127.0.0.1/",
+      "Do not end the controlled incident until nginx reports active and the local request succeeds."
+    ]
+  },
+  "safety_notes": [
+    "Setup and recovery deliberately change only the disposable lab host and require a human operator.",
+    "The evaluation pack does not execute any command or infrastructure change.",
+    "The agent must remain diagnostic-only and must not restart nginx."
+  ]
+}
