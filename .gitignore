@@ -58,3 +58,6 @@ infrastructure/output.json
 .DS_Store
 Thumbs.db
 *~
+
+/tests/
+/evaluations/

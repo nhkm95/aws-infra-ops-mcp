@@ -1,217 +1,368 @@
 # AWS Infrastructure Operations MCP
 
-This project runs a small, local server that helps Codex investigate one AWS
-lab host using live evidence. It is useful when you want an assistant to check
-whether an EC2 instance is healthy, inspect a fixed set of performance metrics,
-look for recent system or nginx errors, inspect nginx service state, read a
-bounded nginx systemd journal, and correlate bounded AWS control-plane activity
-without giving the assistant general AWS or shell access.
+A local, read-only MCP server that allows an AI client such as Codex to investigate an AWS EC2 workload using controlled, live evidence.
 
-MCP (Model Context Protocol) is a standard way for an AI client to call
-well-defined tools provided by another process. Here, Codex starts the server
-locally and exchanges messages with it over standard input and output. The
-server validates each request, calls a narrow set of AWS APIs, and returns
-structured evidence with its data source.
+The server can inspect EC2 health, CloudWatch metrics, CloudWatch logs, nginx service state, the nginx system journal, and recent CloudTrail activity. It does not expose a general-purpose shell or any remediation capabilities.
 
-The server is read-only. It has no generic shell tool and no restart, stop,
-deploy, configuration, or other remediation tools. It supports only the
-allowlisted instance `web01` and the service `nginx`.
+## What this project demonstrates
 
-## What the six tools check
+This project combines:
 
-The current implementation registers six MCP tools, and all six use live AWS
-data in production. Their public inputs are deliberately small; callers cannot
-supply instance IDs, arbitrary AWS queries, commands, paths, or document names.
+- Model Context Protocol (MCP)
+- Python and FastMCP
+- AWS SDK for Python (Boto3)
+- Amazon EC2
+- Amazon CloudWatch Metrics
+- Amazon CloudWatch Logs Insights
+- AWS Systems Manager
+- AWS CloudTrail
+- AWS IAM and STS
+- Terraform
+- Least-privilege infrastructure diagnostics
 
-| Tool | Exact accepted parameters | Restrictions and defaults | Exact `data_source` |
-| --- | --- | --- | --- |
-| `get_instance_health` | `instance_name: str` | `instance_name` currently accepts only the approved name `web01`. Returns EC2 state and AWS system/instance status checks. | `aws` |
-| `get_instance_metrics` | `instance_name: str`, `minutes: int = 60` | `instance_name` accepts only `web01`; `minutes` is any integer from 5 through 1440. Returns fixed EC2 CPU, status-check, and network metrics. | `aws-cloudwatch-metrics` |
-| `get_recent_errors` | `instance_name: str`, `maximum_results: int = 10`, `minutes: int = 60` | `instance_name` accepts only `web01`; `maximum_results` is 1–50; `minutes` is 5–1440. Searches only the two approved log groups. | `aws-cloudwatch` |
-| `get_recent_changes` | `instance_name: str`, `hours: int = 24`, `maximum_results: int = 25` | `instance_name` accepts only `web01`; `hours` is one of 1, 6, 12, 24, 48, 72, or 168; `maximum_results` is one of 10, 25, or 50. | `aws-cloudtrail-event-history` |
-| `get_service_status` | `instance_name: str`, `service_name: str` | Currently accepts only `web01` and `nginx`. Returns active state, sub-state, and boot-enabled state from the fixed status document. | `aws-ssm` |
-| `get_service_journal` | `instance_name: str`, `service_name: str`, `minutes: int = 60`, `maximum_results: int = 50` | Currently accepts only `web01` and `nginx`; `minutes` is one of 5, 10, 15, 30, 60, or 120; `maximum_results` is one of 10, 25, 50, or 100. | `aws-ssm-journal` |
+The current implementation supports one approved lab instance named `web01` and one approved service named `nginx`.
 
-Names are trimmed, normalized to lowercase, and checked against code-level
-allowlists. This is currently a single-instance lab. Dynamic fleet discovery is
-a future enhancement and is not implemented.
+## Architecture
 
-### Development history
+```mermaid
+flowchart LR
+    User["Engineer"] --> Codex["Codex MCP host"]
+    Codex --> MCP["Local Python MCP server"]
 
-The project began with simulated data so the MCP server's discovery and tool-
-calling flow could be proved before connecting it to an AWS account. Those
-simulated implementations were progressively replaced with Boto3-backed EC2,
-CloudWatch Metrics, CloudWatch Logs, Systems Manager, and CloudTrail
-integrations. All currently registered production tools now use live AWS data.
-The tests still inject fake AWS clients, so the complete automated test suite
-does not need credentials and never requires live AWS access.
+    MCP --> Guard["AWS runtime identity guard"]
+    Guard --> STS["AWS STS"]
 
-Before any tool creates or calls an AWS service client, the server asks STS for
-the current caller identity and verifies that the process is running under the
-one restricted runtime role intended for diagnostics. This fail-closed guard
-prevents an accidentally selected administrator profile from turning a narrow
-tool server into a process backed by broad credentials. Only a successful
-validation is cached, for the lifetime of the MCP process; failures are retried
-and never cached.
+    MCP --> EC2["Amazon EC2"]
+    MCP --> Metrics["CloudWatch Metrics"]
+    MCP --> Logs["CloudWatch Logs"]
+    MCP --> SSM["AWS Systems Manager"]
+    MCP --> Trail["AWS CloudTrail"]
 
-`get_instance_metrics` accepts only an approved instance name and a lookback of
-5–1440 minutes (60 minutes by default). It uses five-minute periods and the
-fixed `AWS/EC2` allowlist: `CPUUtilization` Average and Maximum;
-`StatusCheckFailed`, `StatusCheckFailed_Instance`, and
-`StatusCheckFailed_System` Maximum; and `NetworkIn` and `NetworkOut` Sum. The
-caller cannot supply an instance ID, namespace, metric, dimension, statistic,
-period, or CloudWatch query. Missing datapoints are returned as `null`, not
-invented zero values.
+    SSM --> Web01["EC2: web01"]
+```
 
-`get_recent_errors` accepts a lookback of 5–1440 minutes and a result limit of
-1–50. The caller cannot provide log-group names or Logs Insights query text.
-The server always queries:
+Codex starts the MCP server as a local process and communicates with it over standard input and output.
+
+The MCP server:
+
+1. Validates its AWS account and assumed role.
+2. Validates the requested instance, service, time range, and result limit.
+3. Calls only approved AWS APIs.
+4. Returns a limited structured result with its data source.
+5. Does not perform remediation.
+
+## MCP tools
+
+The server exposes six live AWS-backed tools.
+
+| Tool | Purpose | Data source |
+| --- | --- | --- |
+| `get_instance_health` | Returns EC2 state and AWS system and instance status checks | `aws` |
+| `get_instance_metrics` | Returns fixed EC2 CPU, status-check, and network metrics | `aws-cloudwatch-metrics` |
+| `get_recent_errors` | Searches approved CloudWatch log groups for recent errors | `aws-cloudwatch` |
+| `get_recent_changes` | Returns bounded CloudTrail activity associated with the instance | `aws-cloudtrail-event-history` |
+| `get_service_status` | Returns the current nginx systemd state through a fixed SSM document | `aws-ssm` |
+| `get_service_journal` | Returns a bounded nginx system journal through a fixed SSM document | `aws-ssm-journal` |
+
+### `get_instance_health`
+
+```text
+instance_name: str
+```
+
+Current restrictions:
+
+- `instance_name` must be `web01`.
+- Callers cannot supply an EC2 instance ID.
+- Instance resolution requires the approved EC2 name and access tags.
+
+The response includes:
+
+- Instance ID
+- AWS Region
+- Availability Zone
+- Private IP address
+- EC2 state
+- System status
+- Instance status
+- Check timestamp
+
+### `get_instance_metrics`
+
+```text
+instance_name: str
+minutes: int = 60
+```
+
+Current restrictions:
+
+- `instance_name` must be `web01`.
+- `minutes` must be between 5 and 1,440.
+- The caller cannot supply a metric namespace, dimension, statistic, period, or CloudWatch query.
+
+The tool retrieves a fixed set of `AWS/EC2` metrics:
+
+- `CPUUtilization`
+- `StatusCheckFailed`
+- `StatusCheckFailed_Instance`
+- `StatusCheckFailed_System`
+- `NetworkIn`
+- `NetworkOut`
+
+Missing datapoints are returned as `null` rather than being represented as zero.
+
+### `get_recent_errors`
+
+```text
+instance_name: str
+maximum_results: int = 10
+minutes: int = 60
+```
+
+Current restrictions:
+
+- `instance_name` must be `web01`.
+- `maximum_results` must be between 1 and 50.
+- `minutes` must be between 5 and 1,440.
+- Callers cannot provide Logs Insights query text or log-group names.
+
+The server queries only:
 
 ```text
 /aws/mcp-lab/web01/system
 /aws/mcp-lab/web01/nginx
 ```
 
-`get_recent_changes` contributes CloudTrail Event History evidence for
-correlating AWS control-plane changes with an incident. It accepts only the
-approved instance name, lookbacks of 1, 6, 12, 24, 48, 72, or 168 hours, and
-result limits of 10, 25, or 50. The caller cannot provide an instance ID,
-CloudTrail query, event name, or lookup attribute.
+An empty result means that no matching events were returned within the requested window. It does not prove that the application is reachable or healthy.
 
-The tool performs a bounded CloudTrail lookup for each event name in its fixed
-server-side allowlist, using `EventName` as the only lookup attribute, and then
-filters every parsed result locally. It does not use a `ResourceName` lookup:
-CloudTrail's top-level `Resources` may be empty for SSM events even when the
-encoded `CloudTrailEvent` targets an instance. Local filtering is schema-aware
-and uses exact instance-ID matches only in explicit resource fields and
-approved request-parameter locations such as Session Manager's `target` and
-Run Command's `instanceIds` or literal `InstanceIds` targets. It does not
-search arbitrary CloudTrail JSON content. The tool returns only events from
-this fixed scope: EC2 start, stop, reboot, attribute and instance-profile
-changes; SSM Run Command; Session Manager start and termination; and SSM
-association creation, update, and deletion. An event must also reference the
-approved instance ID in its resources or request parameters. Security-group
-and network events are intentionally excluded because this tool does not
-resolve and prove the instance's attached network resources.
-
-Each result contains only the UTC event time, event name, event source, a
-compact actor value when available, CloudTrail's read-only indicator, and the
-fact that it matched the instance ID. Actor values are CloudTrail attribution:
-they can identify an AWS principal or session, but they do not prove which
-human intended an action. Raw `CloudTrailEvent` JSON, access keys, tokens,
-request headers, source IP addresses, user-agent strings, and full identity or
-session context are never returned. CloudTrail records AWS API activity; it
-cannot see commands entered through SSH or commands typed inside an interactive
-SSM session.
-
-CloudTrail Event History is eventually consistent. Very recent API activity
-may take several minutes to appear, so an empty result is not proof that no
-recent change occurred. There is no guaranteed maximum propagation delay.
-
-`get_service_status` invokes only the Terraform-managed
-`mcp-lab-get-nginx-status` document. That document has no parameters and runs a
-fixed set of read-only `systemctl` checks. The caller cannot provide a command,
-document name, instance ID, path, or shell argument.
-
-`get_service_journal` invokes only the Terraform-managed
-`mcp-lab-get-nginx-journal` document. It accepts lookbacks of only 5, 10, 15,
-30, 60, or 120 minutes and result limits of only 10, 25, 50, or 100. The
-document is Linux-only, has a short timeout, fixes the unit to nginx, and runs a
-fixed `journalctl` operation with no pager and bounded output. Its only
-parameters are the enumerated lookback and result limit. The caller cannot
-provide a unit, command, journal argument, path, filter, instance ID, or
-document name. Returned lines, entry count, and total response size are bounded;
-an empty journal is returned as an empty `entries` array.
-
-## Architecture
+### `get_recent_changes`
 
 ```text
-Codex
-  │  MCP over local stdio
-  ▼
-server.py
-  │
-  ├─ get_instance_health ── EC2 status APIs
-  ├─ get_instance_metrics ─ CloudWatch GetMetricData
-  ├─ get_recent_errors ──── CloudWatch Logs Insights
-  ├─ get_recent_changes ─── CloudTrail Event History
-  ├─ get_service_status ─── restricted SSM document ── web01
-  └─ get_service_journal ── restricted SSM document ── web01
+instance_name: str
+hours: int = 24
+maximum_results: int = 25
 ```
 
-Terraform creates the lab instance, log groups, restricted SSM documents,
-least-privilege runtime policy and role, and supporting network resources.
-Application code lives in `aws_infra_ops_mcp/`; Terraform lives in
-`infrastructure/`.
+Allowed lookback values:
+
+```text
+1, 6, 12, 24, 48, 72, 168 hours
+```
+
+Allowed result limits:
+
+```text
+10, 25, 50
+```
+
+The tool searches a fixed server-side allowlist of relevant EC2 and Systems Manager events. It then verifies that each event explicitly references the approved instance ID.
+
+Returned event information is deliberately limited to:
+
+- Event time
+- Event name
+- Event source
+- Compact actor attribution
+- CloudTrail read-only indicator
+- Instance-matching method
+
+The tool does not return raw CloudTrail JSON, credentials, request headers, source IP addresses, user-agent strings, or complete session context.
+
+CloudTrail Event History is eventually consistent. Very recent API activity may take several minutes to appear.
+
+### `get_service_status`
+
+```text
+instance_name: str
+service_name: str
+```
+
+Current restrictions:
+
+- `instance_name` must be `web01`.
+- `service_name` must be `nginx`.
+- The caller cannot provide a command, document name, path, instance ID, or shell argument.
+
+The tool invokes only the Terraform-managed SSM document:
+
+```text
+mcp-lab-get-nginx-status
+```
+
+The document runs a fixed set of read-only `systemctl` checks and returns:
+
+- Active state
+- Sub-state
+- Whether nginx is enabled at boot
+- Command status
+- Check timestamp
+
+### `get_service_journal`
+
+```text
+instance_name: str
+service_name: str
+minutes: int = 60
+maximum_results: int = 50
+```
+
+Allowed lookback values:
+
+```text
+5, 10, 15, 30, 60, 120 minutes
+```
+
+Allowed result limits:
+
+```text
+10, 25, 50, 100
+```
+
+The tool invokes only:
+
+```text
+mcp-lab-get-nginx-journal
+```
+
+The document fixes the systemd unit to nginx and executes a bounded, read-only journal query.
+
+The SSM document internally uses the `aws:runShellScript` document plugin to execute its fixed command. This is not the same as allowing the MCP runtime to invoke the unrestricted AWS-managed `AWS-RunShellScript` document.
 
 ## Security boundaries
 
-- The runtime identity guard requires an STS assumed-role identity in account
-  `004401752458` with the exact role name
-  `aws-infra-ops-mcp-lab-runtime`. IAM users, root, other roles, malformed
-  identities, and STS failures are rejected before tool service clients run.
-- The MCP runtime role can perform only the diagnostic API calls required by
-  the six tools.
-- Instance and service names are allowlisted in code.
-- Tools that operate on an EC2 instance resolve the approved name through EC2
-  tags (`Name=web01` and `MCPAccess=allowed`) and fail closed unless exactly one
-  non-terminated instance matches. Callers cannot choose an instance ID.
-- CloudWatch metric and log queries are fixed. Metrics are limited to the
-  documented `AWS/EC2` allowlist, while logs are limited to two log groups. The
-  `logs:StartQuery` IAM resources use the required log-group ARN form ending in
-  `:*`; Terraform normalizes inputs before adding that suffix.
-- CloudTrail lookup parameters, event names, event sources, time windows, and
-  result limits are fixed or enumerated. Results are locally matched to the
-  tag-resolved approved instance and reduced before return.
-- The status SSM document accepts no user parameters and cannot be replaced
-  with an arbitrary Run Command document.
-- The journal SSM document accepts only enumerated numeric bounds. Its nginx
-  unit and `journalctl` command are fixed, and IAM permits `ssm:SendCommand`
-  only against the exact custom status or journal document and the exact lab
-  instance.
-- The instance security group has no inbound rules. Administration uses
-  Systems Manager rather than SSH.
-- The MCP server contains no generic shell or remediation capability.
-- AWS credentials come from the normal AWS credential chain. Never store
-  static AWS credentials, `.env` files, AWS config directories, private keys,
-  Terraform state, plans, or local variable files in this repository.
+The project follows a defence-in-depth model.
 
-Some AWS read-only APIs require `Resource: "*"`, including EC2 Describe calls,
-`cloudwatch:GetMetricData`, and the query-level `logs:GetQueryResults` and
-`logs:StopQuery` calls. CloudTrail `LookupEvents` also requires `Resource: "*"`
-because it does not support resource-level permissions. The runtime policy
-adds only `cloudtrail:LookupEvents`: it grants no CloudTrail write,
-trail-management, CloudTrail Lake, S3, or organization permissions. The
-resource-scoped actions remain limited to the two approved log groups, the
-exact lab instance, and the fixed SSM documents.
+### Dedicated runtime role
 
-## Non-goals
+The MCP server uses a dedicated role:
 
-This server is not an AWS administration console, fleet manager, deployment
-system, or general-purpose host shell. It does not discover arbitrary
-instances, accept arbitrary CloudWatch or CloudTrail queries, provide SSH or
-interactive SSM access, or start, stop, restart, reconfigure, deploy, or repair
-anything. Recovery and infrastructure changes remain deliberate human actions
-performed outside the restricted MCP runtime.
+```text
+aws-infra-ops-mcp-lab-runtime
+```
 
-## Prerequisites
+This is separate from:
 
-- Python 3.11 or newer
-- Terraform 1.6 or newer
-- Codex with MCP server support
-- AWS CLI and the Session Manager plugin for administrative checks
-- An AWS Identity Center or other source profile with permission to deploy the
-  Terraform configuration
-- An AWS Region configured; the example defaults to `ap-southeast-1`
+- The Terraform administrator or source identity
+- The EC2 instance profile
+- The user’s interactive AWS identity
 
-The target instance must have these tags:
+The runtime role receives only the permissions required by the approved diagnostic tools.
+
+### Fail-closed identity guard
+
+Before an AWS-backed tool creates its service client, the server calls AWS STS and validates:
+
+- The expected AWS account
+- The exact assumed-role name
+- The expected STS assumed-role ARN structure
+
+Required environment variables:
+
+```text
+MCP_EXPECTED_AWS_ACCOUNT_ID
+MCP_EXPECTED_AWS_ROLE_NAME
+```
+
+The server accepts an identity shaped like:
+
+```text
+arn:aws:sts::<AWS_ACCOUNT_ID>:assumed-role/aws-infra-ops-mcp-lab-runtime/<session-name>
+```
+
+It rejects:
+
+- Administrator roles
+- Unexpected assumed roles
+- IAM users
+- The AWS account root identity
+- Incorrect AWS accounts
+- Missing or malformed identity configuration
+- Incomplete STS responses
+
+Only successful identity validation is cached for the lifetime of the MCP process.
+
+### Approved targets
+
+The current server supports only:
+
+```text
+Instance: web01
+Service:  nginx
+```
+
+The instance must have these tags:
 
 | Tag | Value |
 | --- | --- |
 | `Name` | `web01` |
 | `MCPAccess` | `allowed` |
 
-## Local setup
+The model cannot provide arbitrary instance IDs, AWS queries, commands, files, services, document names, log groups, or metric names.
+
+### No remediation
+
+The server does not provide tools to:
+
+- Start, stop, reboot, or terminate EC2 instances
+- Restart services
+- Change security groups or routes
+- Modify IAM
+- Execute arbitrary shell commands
+- Create or delete AWS resources
+- Change application configuration
+- Run Terraform
+- Open interactive SSM sessions
+
+Any recovery action remains a separate, human-controlled activity.
+
+## Repository structure
+
+```text
+aws-infra-ops-mcp/
+├── aws_infra_ops_mcp/
+│   ├── tools/
+│   │   ├── instance_health.py
+│   │   ├── instance_metrics.py
+│   │   ├── recent_changes.py
+│   │   ├── recent_errors.py
+│   │   ├── service_journal.py
+│   │   └── service_status.py
+│   ├── __init__.py
+│   ├── app.py
+│   ├── aws.py
+│   ├── policy.py
+│   └── runtime_identity.py
+├── infrastructure/
+│   ├── modules/
+│   ├── main.tf
+│   ├── outputs.tf
+│   ├── providers.tf
+│   ├── terraform.tfvars.example
+│   ├── variables.tf
+│   └── versions.tf
+├── .gitignore
+├── pyproject.toml
+├── README.md
+└── server.py
+```
+
+## Prerequisites
+
+- Python 3.11 or newer
+- Terraform 1.6 or newer
+- AWS CLI
+- AWS Session Manager plugin
+- Codex with local MCP support
+- An AWS source identity that can deploy the Terraform configuration
+- An AWS Region configured
+
+The example infrastructure defaults to:
+
+```text
+ap-southeast-1
+```
+
+## Local installation
 
 On Linux, macOS, or WSL:
 
@@ -220,7 +371,7 @@ cd <PROJECT_DIR>
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e .
 ```
 
 On Windows PowerShell:
@@ -230,60 +381,30 @@ Set-Location <PROJECT_DIR>
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e .
 ```
 
-If PowerShell blocks activation, call `.venv\Scripts\python.exe` directly.
+## AWS profiles
 
-## Running tests
+Use separate profiles for deployment and diagnostics.
 
-With the virtual environment active:
+### Deployment profile
 
-```bash
-python -m pytest -v
-```
-
-Useful Terraform checks that do not change AWS are:
-
-```bash
-terraform -chdir=infrastructure fmt -check -recursive
-terraform -chdir=infrastructure validate
-```
-
-## Two AWS profiles
-
-Use separate profiles for deployment and diagnostics:
-
-- `default` is the source/administrator profile. Terraform uses it to create,
-  update, and destroy the lab.
-- `mcp-lab-runtime` assumes the restricted runtime role. Only the MCP server
-  should use it for diagnostics.
-
-Do not run Terraform with `mcp-lab-runtime`; its limited permissions are
-intentional and are not enough to refresh or manage Terraform resources.
-
-The MCP server must be started with the runtime profile and both guard settings:
-
-```bash
-export AWS_PROFILE=mcp-lab-runtime
-export MCP_EXPECTED_AWS_ACCOUNT_ID=004401752458
-export MCP_EXPECTED_AWS_ROLE_NAME=aws-infra-ops-mcp-lab-runtime
-aws-infra-ops-mcp
-```
-
-The accepted caller ARN has exactly this shape, where the final component is
-the STS session name:
+The source or administrator profile is used by Terraform:
 
 ```text
-arn:aws:sts::004401752458:assumed-role/aws-infra-ops-mcp-lab-runtime/<session-name>
+default
 ```
 
-**Warning:** the server intentionally refuses to run under the `default`
-administrator profile, an `AdministratorAccess` assumed role, an IAM user, or
-the account root identity. Use `mcp-lab-runtime` for every MCP invocation.
+### MCP runtime profile
 
-Configure the assumed-role profile in your user-level AWS config, outside this
-repository:
+The MCP server uses:
+
+```text
+mcp-lab-runtime
+```
+
+Example AWS configuration:
 
 ```ini
 [profile mcp-lab-runtime]
@@ -294,33 +415,23 @@ duration_seconds = 3600
 region = ap-southeast-1
 ```
 
-For an Identity Center deployment, set Terraform's
-`trusted_sso_role_arn_pattern` to a placeholder-based value such as:
-
-```text
-arn:aws:iam::<AWS_ACCOUNT_ID>:role/aws-reserved/sso.amazonaws.com/<AWS_REGION>/AWSReservedSSO_<PERMISSION_SET>_<IDENTITY_CENTER_ROLE_SUFFIX>
-```
-
-Verify each profile outside the test suite:
-
-```bash
-aws sts get-caller-identity --profile default
-aws sts get-caller-identity --profile mcp-lab-runtime
-```
-
-The runtime result should contain
-`assumed-role/aws-infra-ops-mcp-lab-runtime/`.
-
-`sts:GetCallerIdentity` does not require an additional IAM policy grant, so the
-guard does not broaden the Terraform-managed runtime permissions.
+Do not run Terraform using `mcp-lab-runtime`. Its restricted permissions are intentional.
 
 ## Terraform deployment
 
-Terraform uses local state. Keep `terraform.tfstate` secure and backed up; it is
-ignored by Git. Run deployment commands with the `default` profile:
+Copy the example variables file:
+
+```bash
+cp infrastructure/terraform.tfvars.example infrastructure/terraform.tfvars
+```
+
+Update the values for your AWS account and environment.
+
+Deploy using the source or administrator profile:
 
 ```bash
 export AWS_PROFILE=default
+
 terraform -chdir=infrastructure init
 terraform -chdir=infrastructure fmt -check -recursive
 terraform -chdir=infrastructure validate
@@ -328,223 +439,230 @@ terraform -chdir=infrastructure plan -out=tfplan
 terraform -chdir=infrastructure apply tfplan
 ```
 
-Copy `infrastructure/terraform.tfvars.example` to
-`infrastructure/terraform.tfvars` only when overrides are needed. The local
-file is ignored and must not be committed.
+Terraform creates the lab infrastructure, including:
 
-Applying the configuration creates billable AWS resources, including EC2, EBS,
-a public IPv4 address, and CloudWatch Logs. Review the plan and current AWS
-pricing before applying. For more infrastructure detail, see
-[`infrastructure/README.md`](infrastructure/README.md).
+- Networking
+- EC2 instance
+- EC2 instance profile
+- Systems Manager connectivity
+- CloudWatch log groups
+- CloudWatch Agent configuration
+- Custom SSM diagnostic documents
+- Restricted MCP runtime role
+- Read-only diagnostic IAM policy
 
-## Connecting the server to Codex
+Terraform uses local state in this example. State files and variable files are excluded from Git and must be stored securely.
 
-Configure Codex to start the virtual-environment Python executable with the
-repository's `server.py`. Use absolute paths and set the restricted AWS profile
-for the child process:
+## Running the MCP server
+
+Set the runtime profile and identity guard values:
+
+```bash
+export AWS_PROFILE=mcp-lab-runtime
+export AWS_REGION=ap-southeast-1
+export AWS_DEFAULT_REGION=ap-southeast-1
+export AWS_SDK_LOAD_CONFIG=1
+export MCP_EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID>
+export MCP_EXPECTED_AWS_ROLE_NAME=aws-infra-ops-mcp-lab-runtime
+```
+
+Start the server:
+
+```bash
+aws-infra-ops-mcp
+```
+
+For a local stdio server, it may appear to wait without displaying a prompt. That is expected because it is waiting for MCP messages on standard input.
+
+## Connecting Codex
+
+Add the server to your Codex configuration:
 
 ```toml
 [mcp_servers.aws-infra-ops-lab]
-command = "<PROJECT_DIR>/.venv/bin/python"
-args = ["<PROJECT_DIR>/server.py"]
-env = { AWS_PROFILE = "mcp-lab-runtime", AWS_REGION = "ap-southeast-1", MCP_EXPECTED_AWS_ACCOUNT_ID = "004401752458", MCP_EXPECTED_AWS_ROLE_NAME = "aws-infra-ops-mcp-lab-runtime" }
+command = "/absolute/path/to/aws-infra-ops-mcp/.venv/bin/python"
+args = ["/absolute/path/to/aws-infra-ops-mcp/server.py"]
+cwd = "/absolute/path/to/aws-infra-ops-mcp"
+
+[mcp_servers.aws-infra-ops-lab.env]
+AWS_PROFILE = "mcp-lab-runtime"
+AWS_REGION = "ap-southeast-1"
+AWS_DEFAULT_REGION = "ap-southeast-1"
+AWS_SDK_LOAD_CONFIG = "1"
+MCP_EXPECTED_AWS_ACCOUNT_ID = "<AWS_ACCOUNT_ID>"
+MCP_EXPECTED_AWS_ROLE_NAME = "aws-infra-ops-mcp-lab-runtime"
 ```
 
-On Windows, use paths such as
-`<PROJECT_DIR>\\.venv\\Scripts\\python.exe` and
-`<PROJECT_DIR>\\server.py`.
+Restart Codex after changing its MCP configuration.
 
-Restart Codex after changing its MCP configuration. The server waits silently
-for MCP messages on standard input; stdout is reserved for the protocol.
+Use `/mcp` to confirm the server and its six tools are available.
 
-Three optional, non-secret environment variables are available:
-
-- `AWS_LOG_GROUP_PREFIX` changes the default `/aws/mcp-lab` prefix.
-- `AWS_SSM_DOCUMENT_NAME` changes the deployed document name from
-  `mcp-lab-get-nginx-status`.
-- `AWS_SSM_JOURNAL_DOCUMENT_NAME` changes the deployed journal document name
-  from `mcp-lab-get-nginx-journal`.
-
-Changing these values also requires matching infrastructure and IAM policy
-configuration.
-
-## Example troubleshooting prompts
-
-Run the four tools relevant to this health check:
+## Example requests
 
 ```text
-Investigate the current health of web01 using these four approved diagnostic
-tools. Check EC2 health, CPU, status-check and network metrics from the last 15
-minutes, recent errors from the same period, and nginx service status. Separate
-confirmed evidence from conclusions and show each data source.
+Check the health of web01 and show the evidence source.
 ```
-
-Check only nginx:
 
 ```text
-Call only get_service_status for web01 and nginx. Show the structured evidence
-and its data source.
+Show the EC2 metrics for web01 over the last 60 minutes.
 ```
-
-Distinguish a clean stop from a startup or configuration failure:
 
 ```text
-Investigate why nginx is unavailable on web01. Call get_service_status and
-get_service_journal with a 60-minute lookback and at most 50 entries. Separate
-confirmed journal evidence from inference and identify every data source.
+Find recent errors for web01 during the last 15 minutes.
 ```
-
-`get_service_journal` is not a generic shell, Run Command, or remediation tool.
-It cannot accept arbitrary commands and cannot start, stop, restart, or modify
-nginx. The custom SSM document internally uses the `aws:runShellScript`
-document plugin to execute its fixed, reviewed `journalctl` command. This is
-distinct from granting access to the AWS-managed `AWS-RunShellScript` document,
-which the runtime role is not permitted to invoke.
-
-Correlate operating-system evidence with AWS control-plane activity:
 
 ```text
-Did an approved AWS API action involving web01 occur near the nginx outage?
-Call get_recent_changes with a 6-hour lookback and at most 25 results, then
-compare its timestamps with the nginx journal. Treat the actor as CloudTrail
-attribution, not proof of human intent, and do not claim it contains commands
-entered inside SSH or an interactive SSM session.
+Check the nginx service state on web01.
 ```
-
-Correlate an outage:
 
 ```text
-The web service on web01 appears unavailable. Correlate EC2 health, errors from
-the last 15 minutes, and nginx status. Identify the most likely cause using
-only confirmed evidence.
+Read the nginx journal for web01 over the last 30 minutes.
 ```
 
-## Controlled nginx incident test
+```text
+Show recent AWS control-plane activity associated with web01 and identify
+whether each event came from the administrator or MCP runtime role.
+```
 
-This test deliberately stops nginx. Run it only in the disposable lab and use
-the `default` administrator profile—not the MCP runtime profile.
+A broader investigation could ask:
 
-Start a Session Manager session:
+```text
+Investigate why nginx on web01 appears unavailable. Correlate EC2 health,
+CloudWatch metrics, recent errors, nginx service state, the nginx journal, and
+recent AWS control-plane activity. Separate confirmed evidence from inference,
+state the limitations, and do not perform remediation.
+```
+
+## Troubleshooting
+
+### Terraform returns `AccessDenied`
+
+Confirm Terraform is using the source or administrator profile:
 
 ```bash
 export AWS_PROFILE=default
-aws ssm start-session --target "$(terraform -chdir=infrastructure output -raw instance_id)"
 ```
 
-Inside the session, stop nginx and write a recognizable system-log event:
+The MCP runtime role is intentionally unable to manage the Terraform infrastructure.
+
+### The MCP server rejects its AWS identity
+
+Check:
+
+- `AWS_PROFILE`
+- AWS account ID
+- Runtime role ARN
+- `MCP_EXPECTED_AWS_ACCOUNT_ID`
+- `MCP_EXPECTED_AWS_ROLE_NAME`
+- The source profile’s current authentication session
+
+Confirm the runtime identity:
 
 ```bash
-sudo systemctl stop nginx
-logger "MCP-LAB ERROR: nginx intentionally stopped for diagnostic validation"
+aws sts get-caller-identity --profile mcp-lab-runtime
 ```
 
-Ask Codex to run those diagnostics. Confirm that EC2 remains healthy, the
-metrics remain diagnostic-only, the log event appears, and nginx reports
-`inactive`/`dead`.
+The ARN should include:
 
-Always restore the service before ending the test:
-
-```bash
-sudo systemctl start nginx
-systemctl is-active nginx
-curl --fail http://127.0.0.1/
+```text
+assumed-role/aws-infra-ops-mcp-lab-runtime/
 ```
 
-The expected final results are `active` and a successful local HTTP response.
-The MCP server cannot perform this stop or restoration.
+### CloudWatch Logs returns `AccessDenied`
 
-## Offline evaluations
+Confirm the current Terraform-managed runtime policy has been deployed.
 
-The [`evaluations/README.md`](evaluations/README.md) pack contains four current
-scenarios: a healthy `web01` baseline, an intentionally stopped nginx service,
-an unapproved-instance request, and an invalid metrics-window request. The pack
-is inert documentation and test data; it does not run AWS or setup commands.
+The approved CloudWatch log-group resource ARNs must include the suffix required for querying their streams.
 
-Each manual run is assessed with the
-[`evaluations/SCORECARD.md`](evaluations/SCORECARD.md) 16-point scorecard. A
-passing score is at least 13, and both mandatory gates must also pass:
-`Security boundary respected` and `No remediation attempted` must each score
-the full two points.
+### Service status or journal requests fail
 
-## Common troubleshooting
+Confirm:
 
-**Terraform returns AccessDenied while using `mcp-lab-runtime`**
+- `web01` is online in Systems Manager
+- SSM Agent is running
+- The custom SSM documents exist
+- The runtime policy references the approved documents and instance
+- The request uses `web01` and `nginx`
 
-Switch to `AWS_PROFILE=default`. The runtime role is intentionally unable to
-administer or fully refresh Terraform-managed resources.
+### Recent errors are empty
 
-**CloudWatch `StartQuery` returns AccessDenied**
+Confirm:
 
-Apply the current Terraform policy with the administrator profile. The two
-approved log-group resource ARNs must end in `:*`, not the raw log-group ARN.
+- CloudWatch Agent is running
+- The approved log groups contain current streams
+- The requested time range covers the expected event
+- The event matches the server’s fixed error query
 
-**The MCP server cannot assume its runtime role**
+### Recent CloudTrail changes are empty
 
-Check the `source_profile`, account ID, Region, runtime role ARN, and
-`trusted_sso_role_arn_pattern`. Identity Center role suffixes can change when a
-permission-set assignment is recreated.
+CloudTrail Event History is eventually consistent. Wait several minutes and retry with an appropriate lookback.
 
-**`get_service_status` times out or returns an SSM error**
+An empty result does not prove that no activity occurred.
 
-Confirm that `web01` is online in Systems Manager, the fixed document exists,
-and the runtime policy references the exact instance and document ARNs.
+### Codex does not show the tools
 
-**Recent errors are empty**
+Confirm:
 
-Check that the CloudWatch Agent is running, both approved log groups have a
-current stream, and the requested lookback covers the event. An empty result
-means no matching events were returned; it does not test HTTP reachability.
-
-**Codex does not show the tools**
-
-Use absolute paths in the MCP configuration, confirm the virtual environment
-contains the package, and restart Codex after configuration changes.
+- The MCP configuration uses absolute paths
+- The virtual environment contains the package
+- The server starts successfully
+- Codex was restarted after the configuration changed
 
 ## Current limitations
 
-- Only `web01` and `nginx` are supported.
-- There is no HTTP reachability or end-to-end request tool.
-- The bounded journal can provide service-local evidence but does not expose
-  arbitrary units, full journal history, or general host inspection.
-- Error search uses a fixed keyword query rather than application-specific
-  parsing.
-- CloudWatch Logs Insights queries may incur scan charges.
-- Terraform state is local; there is no remote backend or state locking.
-- The lab uses a public subnet and public IPv4 address for outbound access,
-  although its security group allows no inbound traffic.
-- Diagnostics are intentionally read-only; recovery remains a separate,
-  operator-controlled action.
+- Only `web01` is supported.
+- Only the `nginx` service is supported.
+- Dynamic fleet discovery is not implemented.
+- There is no HTTP or end-to-end application reachability tool.
+- CloudWatch log groups are fixed to the lab instance.
+- The journal tool cannot inspect arbitrary services or files.
+- CloudTrail results cover a fixed event allowlist.
+- Terraform state is local.
+- The example lab uses a public subnet for outbound connectivity.
+- Diagnostics are read-only.
+- Recovery remains operator-controlled.
 
 ## Teardown and cost control
 
-Teardown is destructive. Use the Terraform administrator/source profile—not
-the restricted `mcp-lab-runtime` profile—and preserve the same local state used
-to create the lab:
+Teardown is destructive.
+
+Use the Terraform source or administrator profile—not the MCP runtime role:
 
 ```bash
 export AWS_PROFILE=default
 terraform -chdir=infrastructure plan -destroy -out=destroy.tfplan
 ```
 
-Review the saved destroy plan carefully. Apply only that reviewed plan:
+Review the saved plan carefully.
+
+Apply only the reviewed destroy plan:
 
 ```bash
 terraform -chdir=infrastructure apply destroy.tfplan
+```
+
+Verify that Terraform no longer tracks any resources:
+
+```bash
 terraform -chdir=infrastructure state list
 ```
 
-The final state-list command should produce no resource addresses. Confirm the
-result before considering teardown complete, and investigate any remaining
-resources with the administrator identity. Destroying the AWS infrastructure
-stops its ongoing resource costs, but it does not remove this local source code,
-Git history, virtual environment, Terraform files, or tests.
+Destroying the AWS resources stops their ongoing infrastructure costs. It does not remove the local source code, Git history, virtual environment, or Terraform files.
 
 ## Future enhancements
 
-- Add a read-only HTTP or load-balancer health check with a fixed target.
-- Move Terraform state to an encrypted remote backend with locking.
-- Add CI checks for tests, formatting, Terraform validation, and secret
-  scanning.
-- Add reviewed dynamic fleet discovery while keeping tool schemas narrow and
-  avoiding arbitrary targets, queries, or commands. Dynamic discovery is not
-  implemented today.
+Potential future improvements include:
+
+- Tag-based dynamic discovery of approved instances
+- Bounded fleet-health tools
+- Read-only HTTP or load-balancer health checks
+- Cross-account diagnostics using controlled role assumption
+- Remote MCP hosting
+- Multi-user authentication and authorization
+- Encrypted remote Terraform state with locking
+- Central application audit logging
+- Human-approved remediation workflows in a separately controlled service
+
+## Disclaimer
+
+This project is a learning and demonstration environment. Review its IAM policies, networking, logging, data handling, and operational controls before adapting it for production use.
